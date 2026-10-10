@@ -26,6 +26,8 @@ const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const
 const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
 
 // Feste Wahlmoeglichkeiten unter jeder Frage.
+// Steht vorgewaehlt in der Auswahl, damit dort nicht "none" erscheint; waehlt nichts.
+const KEINE = '__keine'
 const EIGENE = '__eigene'
 const SPAETER = '__spaeter'
 const ERLEDIGT = '__erledigt'
@@ -279,7 +281,15 @@ function wahl($: EngineInterface, els: Els, surface: string, key: string, punkt:
   const mitTextfeld = surface !== 'mobile' && 'Input' in els
   const { Box, Button, Text } = els
   const liste = surface !== 'mobile' && 'Select' in els
-    ? <els.Select key={key} label="Antwort: " options={optionen} onSelect={(wert: string) => void waehlen($, punkt, wert, mitTextfeld)} />
+    ? (
+      <els.Select
+        key={key}
+        label="Antwort"
+        options={[{ value: KEINE, label: 'bitte wählen' }, ...optionen]}
+        value={KEINE}
+        onSelect={(wert: string) => void (wert === KEINE ? undefined : waehlen($, punkt, wert, mitTextfeld))}
+      />
+    )
     : (
       <Box key={key} flexDirection="row" flexWrap="wrap">
         {optionen.map(o => (
@@ -452,9 +462,9 @@ export const register: Register = (on, options) => {
     const k = kopf(punkt)
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" borderStyle="round" borderColor={k.farbe} paddingX={1}>
         <Text>
-          <Text color={k.farbe}>{k.zeichen}</Text>
+          <Text color={k.farbe} bold>{k.zeichen}</Text>
           <Text dimColor>{liste.length > 1 ? ` (1 von ${liste.length})` : ''}{istVeraltet(punkt) ? ' – noch aktuell?' : ''}: </Text>
           <Text bold>{punkt.titel}</Text>
         </Text>
@@ -490,9 +500,9 @@ export const register: Register = (on, options) => {
         {prueft && <Text dimColor>prüft die letzte Antwort …</Text>}
         {liste.length === 0 && <Text dimColor>Nichts offen.</Text>}
         {liste.map((p, i) => (
-          <Box key={p.id} flexDirection="column" marginBottom={1}>
+          <Box key={p.id} flexDirection="column" borderStyle="round" borderColor={kopf(p).farbe} borderDimColor={istVeraltet(p)} paddingX={1}>
             <Text>
-              <Text color={kopf(p).farbe}>{i + 1}. {p.art === 'aufgabe' ? 'Zu tun: ' : ''}</Text>
+              <Text color={kopf(p).farbe} bold>{i + 1}. {p.art === 'aufgabe' ? 'Zu tun: ' : ''}</Text>
               <Text bold>{p.titel}</Text>
               <Text dimColor>{vermerk(p)}</Text>
             </Text>

@@ -173,7 +173,13 @@ test('Punkte landen in offen.md, Antworten mit Abwägung im Tagesverlauf, die Au
 
   const ui = await $.ui.mount(band('terminal') as never)
   expect(await ui.find({ type: 'Text', text: /■ Blockiert/ })).toBeDefined()
+  // Abgesetzt: roter Rahmen um die Frage; die Auswahl zeigt "bitte wählen" statt "none".
+  const rahmen = (await ui.find({ type: 'Box' })) as { props?: { borderStyle?: string; borderColor?: string } } | undefined
+  expect([rahmen?.props?.borderStyle, rahmen?.props?.borderColor]).toEqual(['round', 'red'])
   const sel = await ui.find({ type: 'Select' })
+  expect((sel as { props?: { value?: string } }).props?.value).toBe('__keine')
+  await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '__keine' } as never)
+  expect(dateien.get('/projekt/offene-punkte/offen.md')).toContain('### 1. Ausrollen')
   await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
   await ui.unmount()
 
