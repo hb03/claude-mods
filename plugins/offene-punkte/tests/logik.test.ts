@@ -1,13 +1,20 @@
 import { describe, expect, test } from 'claude-code/testing'
+import type { Auswertung } from '../hooks/logik'
 
 import type { Punkt } from '../types'
 import { MAX_PUNKTE, anfrage, brauchtErgaenzung, lies, offene, statuszeile, zusammenfuehren } from '../hooks/logik'
+
+const neuer = (titel: string, frage: string): Auswertung['neu'][number] =>
+  ({ titel, frage, info: '', art: 'entscheidung', stufe: 'normal', abwaegung: '', anleitung: '', optionen: [{ label: 'Ja', antwort: '' }] })
+const leer: Auswertung = { neu: [], aktualisiert: [], erledigt: [], erwaehnt: [], ueberblick: '' }
 
 const punkt = (id: string, titel: string, extra: Partial<Punkt> = {}): Punkt => ({
   id,
   titel,
   frage: `${titel}?`,
   info: '',
+  art: 'entscheidung',
+  anleitung: '',
   optionen: [{ label: 'Ja', antwort: 'Ja.' }],
   status: 'offen',
   zurueckgestellt: 0,
@@ -50,10 +57,8 @@ describe('Liste führen', () => {
     let n = 0
     const alt = [punkt('a', 'Cronjob anlegen'), punkt('b', 'Datenschutz ergänzen')]
     const neu = zusammenfuehren(alt, {
-      neu: [
-        { titel: 'Cronjob anlegen!', frage: 'Nochmal?', info: '', optionen: [{ label: 'Ja', antwort: '' }] },
-        { titel: 'Sitemap einreichen', frage: 'Einreichen?', info: '', optionen: [{ label: 'Ja', antwort: '' }] },
-      ],
+      ...leer,
+      neu: [neuer('Cronjob anlegen!', 'Nochmal?'), neuer('Sitemap einreichen', 'Einreichen?')],
       erledigt: ['b'],
     }, 5, () => `n${n++}`)
     expect(offene(neu).map(p => p.titel)).toEqual(['Cronjob anlegen', 'Sitemap einreichen'])
@@ -67,7 +72,7 @@ describe('Liste führen', () => {
 
   test('bleibt bei höchstens MAX_PUNKTE', async () => {
     const viele = Array.from({ length: MAX_PUNKTE + 5 }, (_, i) => punkt(`x${i}`, `Punkt ${i}`))
-    expect(zusammenfuehren(viele, { neu: [], erledigt: [] }, 1, () => 'n').length).toBe(MAX_PUNKTE)
+    expect(zusammenfuehren(viele, leer, 1, () => 'n').length).toBe(MAX_PUNKTE)
   })
 
   test('Antworten mit Doppelpunkt am Ende werden nur vorbereitet', async () => {

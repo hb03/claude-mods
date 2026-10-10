@@ -14,6 +14,9 @@ export type Status = 'offen' | 'erledigt' | 'verworfen'
 /** Entscheidung: der Nutzer wählt eine Antwort. Aufgabe: er muss selbst etwas tun (ausführen, liefern, prüfen). */
 export type Art = 'entscheidung' | 'aufgabe'
 
+/** Blockiert: ohne den Nutzer geht es nicht weiter. Angebot: "könnte ich auch noch …". */
+export type Stufe = 'blockiert' | 'normal' | 'angebot'
+
 /** Ein offener Punkt, wie Haiku ihn aus einer Antwort gelesen hat. */
 export type Punkt = {
   id: string
@@ -30,6 +33,12 @@ export type Punkt = {
    */
   anleitung: string
   optionen: Option[]
+  /** Fehlt bei Punkten aus älteren Fassungen: dann normal. */
+  stufe?: Stufe
+  /** Die Argumente aus der Antwort, die für die Entscheidung zählen – für den Verlauf. */
+  abwaegung?: string
+  /** So viele Auswertungen in Folge ohne Bezug auf den Punkt; ab VERALTET_NACH gilt er als veraltet. */
+  ohneBezug?: number
   status: Status
   /** Später: rutscht in der Reihenfolge der Fragen nach hinten. */
   zurueckgestellt: number
@@ -48,6 +57,8 @@ declare module 'claude-code' {
       ausgeblendet: boolean
       /** Laufender Überblick über die Sitzung (Markdown), bei jeder Auswertung fortgeschrieben. */
       ueberblick: string
+      /** Punkt, zu dem gerade eine eigene Antwort getippt wird (leer: keiner). */
+      eigene: string
     }
   }
 }
