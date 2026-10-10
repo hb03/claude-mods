@@ -1,0 +1,26 @@
+{
+  "name": "offene-punkte",
+  "version": "0.3.0",
+  "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung – und stellt sie über der Eingabe; führt einen laufenden Überblick über die Sitzung. /offen zeigt beides, /zusammenfassung fasst die ganze Sitzung zusammen. Auswertung über Haiku.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "modell": {
+      "type": "string",
+      "title": "Modell für die Auswertung",
+      "description": "Alias oder Modell-ID; haiku hält die Kosten klein",
+      "default": "haiku"
+    },
+    "mindestLaenge": {
+      "type": "number",
+      "title": "Auswerten ab Zeichen",
+      "description": "Kürzere Antworten werden nicht ausgewertet",
+      "default": 400
+    },
+    "fragenAnzeigen": {
+      "type": "boolean",
+      "title": "Fragen über der Eingabe zeigen",
+      "description": "Aus: nur Statuszeile und /offen",
+      "default": true
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "kontext-anzeige",
+  "version": "0.3.2",
+  "description": "Zeile über der Eingabe mit Kontextfüllung, Prompt-Cache, Auto-Compact und Limits, dazu Hinweise, wann /compact, /clear oder Weitermachen sinnvoll ist; /kontext zeigt Details.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Cache-Lebensdauer",
+      "description": "auto erkennt 5 min oder 1 h selbst",
+      "default": "auto",
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ]
+    },
+    "warnProzent": {
+      "type": "number",
+      "title": "Kontext-Hinweis ab Prozent",
+      "description": "Ab dieser Füllung schlägt der Mod /compact vor",
+      "default": 60
+    },
+    "systemMeldung": {
+      "type": "boolean",
+      "title": "Cache-Ablauf auch als Systemmeldung",
+      "description": "Zusätzlich zur Einblendung eine Benachrichtigung über den eigenen Kanal",
+      "default": false
+    },
+    "zeileUeberEingabe": {
+      "type": "boolean",
+      "title": "Zeile über der Eingabe",
+      "description": "Eigene Zeile über der Eingabe. Normalerweise aus: die Werte zeigt die Statuszeile (statusline.sh), und die Zeile gehört offene-punkte",
+      "default": false
+    }
+  }
+}

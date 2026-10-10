@@ -1,0 +1,5 @@
+# von der Engine bei jedem Laden erzeugt
+plugins/*/.claude-plugin/types/
+plugins/*/tsconfig.json
+# Archiv eines Fremd-Plugins (claude-kit, MIT), nicht gelistet
+plugins/savvy-progress/

@@ -1,0 +1,25 @@
+{
+  "name": "eigene-plugins",
+  "owner": {
+    "name": "hb03"
+  },
+  "metadata": {
+    "description": "Eigene Plugins und Mods dieses Servers."
+  },
+  "plugins": [
+    {
+      "name": "kontext-anzeige",
+      "source": "./plugins/kontext-anzeige",
+      "description": "Mod: Hinweise zu Kontext, Prompt-Cache, Auto-Compact und Limits; liefert Cache-Werte an ~/.claude/statusline.sh, optional eigene Zeile über der Eingabe; /kontext für Details.",
+      "version": "0.3.2",
+      "category": "mod"
+    },
+    {
+      "name": "offene-punkte",
+      "source": "./plugins/offene-punkte",
+      "description": "Mod: erkennt nach jeder Antwort offene Punkte (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; führt einen Überblick über die Sitzung. /offen, /zusammenfassung. Auswertung über Haiku.",
+      "version": "0.3.0",
+      "category": "mod"
+    }
+  ]
+}
