@@ -228,6 +228,17 @@ export function befehle(anleitung: string): string[] {
   return liste.slice(0, 3)
 }
 
+/**
+ * Was "Ausführen" in die Eingabe legt: eine Bitte an Claude, den Befehl mit seinem
+ * Bash-Werkzeug auszuführen. Ein eingefügtes "! befehl" schaltet die Eingabe nicht
+ * in den Bash-Modus, sondern ginge als Text an Claude.
+ */
+export function ausfuehrBitte(titel: string, befehl: string): string {
+  const zaun = befehl.includes('`') ? '``' : '`'
+  const abstand = zaun === '``' ? ' ' : ''
+  return `Zum offenen Punkt „${titel}“: Bitte führe aus: ${zaun}${abstand}${befehl}${abstand}${zaun}`
+}
+
 /** Kurzform eines Befehls für die Auswahl. */
 export const befehlLabel = (befehl: string): string => `Ausführen: ${befehl.length > 32 ? befehl.slice(0, 31) + '…' : befehl}`
 

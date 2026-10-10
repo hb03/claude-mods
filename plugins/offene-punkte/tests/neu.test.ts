@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Auswertung } from '../hooks/logik'
 import {
-  VERALTET_NACH, ablageLesen, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies, offene,
+  VERALTET_NACH, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies, offene,
   ordnerName, statuszeile, verlaufsEintraege, zusammenfuehren,
 } from '../hooks/logik'
 import type { Punkt } from '../types'
@@ -63,6 +63,11 @@ describe('Befehle aus der Anleitung', () => {
   test('Shell-Blöcke ja, JSON nein; Kommentare und $ fallen weg; mehrzeilig mit &&', async () => {
     const anleitung = '1. Erst:\n```bash\n# vorher\n$ cd /opt/app\nmake\n```\n2. Dann:\n```json\n{"a":1}\n```\n```\nsystemctl restart app\n```\n```\nkey = wert\n```'
     expect(befehle(anleitung)).toEqual(['cd /opt/app && make', 'systemctl restart app'])
+  })
+
+  test('Ausführen bittet Claude, den Befehl auszuführen; Backticks im Befehl bleiben heil', async () => {
+    expect(ausfuehrBitte('Test', 'date && pwd')).toBe('Zum offenen Punkt „Test“: Bitte führe aus: `date && pwd`')
+    expect(ausfuehrBitte('Test', 'echo `date`')).toBe('Zum offenen Punkt „Test“: Bitte führe aus: `` echo `date` ``')
   })
 
   test('Fortsetzungszeilen werden eine Zeile', async () => {

@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Punkt } from '../types'
 import {
-  AUFTRAG, ZUSAMMENFASSUNG, ablageLesen, ablageText, anfrage, auswerten as auswertenNoetig, ausnahmeErgaenzen,
+  AUFTRAG, ZUSAMMENFASSUNG, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig, ausnahmeErgaenzen,
   befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, offene, ordnerName, statuszeile,
   verlaufKopf, verlaufsEintraege, vermerk, zusammenfuehren,
 } from './logik'
@@ -227,9 +227,9 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
     return
   }
   if (wert.startsWith(BEFEHL)) {
-    // Nur vorbereitet: der Nutzer sieht den Befehl und schickt ihn selbst ab. Der Punkt bleibt offen.
+    // Nur vorbereitet: der Nutzer sieht die Bitte und schickt sie selbst ab; Claude fuehrt aus. Der Punkt bleibt offen.
     const befehl = befehle(punkt.anleitung)[Number(wert.slice(BEFEHL.length))]
-    if (befehl !== undefined) await $.prompt.fill({ text: `! ${befehl}`, mode: 'replace' })
+    if (befehl !== undefined) await $.prompt.fill({ text: ausfuehrBitte(punkt.titel, befehl), mode: 'replace' })
     return
   }
   if (wert === SPAETER) {
