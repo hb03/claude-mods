@@ -239,12 +239,28 @@ export function ausfuehrBitte(titel: string, befehl: string): string {
   return `Zum offenen Punkt „${titel}“: Bitte führe aus: ${zaun}${abstand}${befehl}${abstand}${zaun}`
 }
 
+/** Wie lange gesammelte Antworten nach der letzten Wahl auf weitere warten. */
+export const WARTEZEIT = 30_000
+
+/** Eine gesammelte Antwort: zu welchem Punkt, und was Claude bekommt. */
+export type Teil = { titel: string; text: string }
+
+/**
+ * Die gesammelten Antworten als eine Nachricht. Ist der letzte Text leer, endet sie
+ * offen - für die Eingabe, wo der Nutzer noch etwas ergänzt.
+ */
+export function sammelText(teile: readonly Teil[]): string {
+  if (teile.length === 1) return `Zum offenen Punkt „${teile[0]!.titel}“: ${teile[0]!.text}`
+  return 'Zu den offenen Punkten:\n' + teile.map(t => `- „${t.titel}“: ${t.text}`).join('\n')
+}
+
 /** Kurzform eines Befehls für die Auswahl. */
 export const befehlLabel = (befehl: string): string => `Ausführen: ${befehl.length > 32 ? befehl.slice(0, 31) + '…' : befehl}`
 
 export type Kommando =
   | { art: 'liste' }
   | { art: 'leeren' }
+  | { art: 'senden' }
   | { art: 'fehler'; text: string }
   | { art: 'punkt'; nummer: number; tun: 'erledigt' | 'weg' | 'spaeter' | 'aktuell' | 'option'; option?: number }
 
@@ -253,6 +269,7 @@ export function kommando(args: string): Kommando {
   const a = args.trim().toLowerCase()
   if (a === '') return { art: 'liste' }
   if (a === 'leeren') return { art: 'leeren' }
+  if (a === 'senden') return { art: 'senden' }
   const m = /^(\d+)\s+(\S+)$/.exec(a)
   if (m === null) return { art: 'fehler', text: HILFE }
   const nummer = Number(m[1])
@@ -266,7 +283,7 @@ export function kommando(args: string): Kommando {
   return { art: 'fehler', text: HILFE }
 }
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> a|b|c|d (Antwort wählen) · /offen leeren'
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> a|b|c|d (Antwort wählen) · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
 
 const RAHMEN: Record<Stufe, string> = { blockiert: 'blockiert', normal: '', angebot: 'Angebot' }
 

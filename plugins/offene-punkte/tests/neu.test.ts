@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import type { Auswertung } from '../hooks/logik'
 import {
@@ -220,6 +221,7 @@ test('eigene Antwort: Textfeld unter der Auswahl, Enter schickt ab und schließt
   const feld = await ui.find({ type: 'Input' })
   expect(feld).toBeDefined()
   await $.ui.input({ plugin: 'offene-punkte', key: String((feld as { key?: string }).key), text: 'Erst morgen früh.' } as never)
+  await uhr.settle()
   expect(gesendet).toEqual(['Zum offenen Punkt „Ausrollen“: Erst morgen früh.'])
   await ui.unmount()
   const danach = await $.ui.mount(band('terminal') as never)
@@ -276,4 +278,68 @@ test('neue Sitzung übernimmt die Punkte aus offen.md; /offen 1 erledigt und Wie
   await pane.unmount()
   const wieder = await $.command.run({ command: 'offen', args: '' } as never)
   expect(String((wieder as { text?: string }).text)).toContain('1. Sitemap einreichen')
+})
+
+// ---------------------------------------------------------------- Antworten sammeln
+
+const ZWEI = JSON.stringify({
+  neu: [
+    { titel: 'Variante', art: 'entscheidung', frage: 'A oder B?', optionen: [{ label: 'A', antwort: 'Nimm A.' }, { label: 'B', antwort: 'Nimm B.' }] },
+    { titel: 'Ausrollen', art: 'entscheidung', frage: 'Gleich ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja, gleich.' }, { label: 'Später', antwort: '' }] },
+  ],
+  erledigt: [],
+})
+
+async function zweiFragen($: Parameters<TestBody>[0], on: On) {
+  const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+  grundlage(on, new Map())
+  on('model.complete', () => ({ value: { isAnswered: true, text: ZWEI } }) as never)
+  const gesendet: string[] = []
+  on('prompt.submit', (_, e) => {
+    gesendet.push(e.text)
+    return { text: e.text } as never
+  })
+  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+  return { uhr, gesendet }
+}
+
+test('zwei Fragen einer Runde: die erste Antwort wartet, beide gehen als eine Nachricht', async ($, on) => {
+  const { uhr, gesendet } = await zweiFragen($, on)
+  const r1 = await $.command.run({ command: 'offen', args: '1 b' } as never)
+  expect(String((r1 as { text?: string }).text)).toContain('wartet auf die übrigen Fragen')
+  expect(gesendet).toEqual([])
+
+  const ui = await $.ui.mount(band('terminal') as never)
+  expect(await ui.find({ type: 'Text', text: /1 Antwort wartet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: 'Jetzt senden' })).toBeDefined()
+  await ui.unmount()
+
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await uhr.settle()
+  expect(gesendet).toEqual(['Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'])
+})
+
+test('ohne weitere Wahl geht das Gesammelte nach 30 Sekunden los; "Schon erledigt" zählt als beantwortet', async ($, on) => {
+  const { uhr, gesendet } = await zweiFragen($, on)
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await uhr.advance(29_000)
+  expect(gesendet).toEqual([])
+  await uhr.advance(1_000)
+  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
+})
+
+test('eine Antwort ohne Text schließt die Runde und schickt das Gesammelte sofort', async ($, on) => {
+  const { uhr, gesendet } = await zweiFragen($, on)
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await $.command.run({ command: 'offen', args: '1 b' } as never)
+  await uhr.settle()
+  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
+})
+
+test('schreibt der Nutzer selbst, steht das Gesammelte vor seiner Nachricht', async ($, on) => {
+  const { gesendet } = await zweiFragen($, on)
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await $.prompt.submit({ text: 'Und mach danach die Tests.', origin: { kind: 'composer' } } as never)
+  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.\n\nUnd mach danach die Tests.'])
 })

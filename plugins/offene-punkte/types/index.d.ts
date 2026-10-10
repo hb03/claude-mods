@@ -59,6 +59,8 @@ declare module 'claude-code' {
       ueberblick: string
       /** Punkt, zu dem gerade eine eigene Antwort getippt wird (leer: keiner). */
       eigene: string
+      /** So viele Antworten warten darauf, gesammelt an Claude zu gehen. */
+      wartend: number
     }
   }
 }

@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Punkt } from '../types'
 import {
-  AUFTRAG, ZUSAMMENFASSUNG, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig, ausnahmeErgaenzen,
-  befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, offene, ordnerName, statuszeile,
+  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig, ausnahmeErgaenzen,
+  befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, offene, ordnerName, sammelText, statuszeile,
   verlaufKopf, verlaufsEintraege, vermerk, zusammenfuehren,
 } from './logik'
+import type { Teil } from './logik'
 
 // Offene Punkte der Sitzung: nach jeder Antwort liest ein kleines Modell
 // (Haiku), was noch eine Entscheidung, Freigabe oder Zuarbeit des Nutzers
@@ -24,6 +25,7 @@ const prueftA = atom({ plugin: 'offene-punkte', key: 'prueft' } as const, false)
 const ausgeblendetA = atom({ plugin: 'offene-punkte', key: 'ausgeblendet' } as const, false)
 const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const, '')
 const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
+const wartendA = atom({ plugin: 'offene-punkte', key: 'wartend' } as const, 0)
 
 // Feste Wahlmoeglichkeiten unter jeder Frage.
 // Steht vorgewaehlt in der Auswahl, damit dort nicht "none" erscheint; waehlt nichts.
@@ -49,10 +51,13 @@ let wartendeEingabe = ''
 let laeuft = false
 // Eigene Antwort, die (ohne Textfeld) in der Eingabe vorbereitet wurde: schliesst den Punkt beim Abschicken.
 let vorbereitet: { id: string; anfang: string } | null = null
+// Antworten einer Runde (Fragen aus derselben Auswertung) gehen gesammelt an Claude: wenn
+// alle beantwortet sind oder WARTEZEIT nach der letzten Wahl. Leere Texte zaehlen als
+// beantwortet, schicken aber nichts (Spaeter, Schon erledigt, Nicht relevant).
+let sammlung: { runde: number; beantwortet: Set<string>; teile: Teil[] } | null = null
+let zeitgeber: Timer | null = null
 // Wo die Dateien liegen; einmal je Sitzung ermittelt.
 let ort: Promise<{ ordner: string } | null> | null = null
-
-const antwortAnfang = (p: Punkt) => `Zum offenen Punkt „${p.titel}“: `
 
 async function zeigeStatus($: EngineInterface) {
   const [punkte, prueft] = await Promise.all([read($, punkteA), read($, prueftA)])
@@ -205,13 +210,65 @@ async function wiederOeffnen($: EngineInterface, id: string) {
   }))
 }
 
+/** Das Gesammelte als eine Nachricht an Claude; ohne Text nur aufraeumen. */
+async function senden($: EngineInterface) {
+  zeitgeber?.cancel()
+  zeitgeber = null
+  const s = sammlung
+  sammlung = null
+  await update($, wartendA, () => 0)
+  if (s === null || s.teile.length === 0) return
+  // Als eigene Nachricht des Nutzers; laeuft gerade eine Antwort, kommt sie danach. Ausserhalb
+  // des aufrufenden Hooks: aus /offen (command.run) heraus lehnt die Engine ein submit ab.
+  const text = sammelText(s.teile)
+  $.clock.after(0, () => {
+    void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: nicht gesendet (${String(fehler)})`))
+  })
+}
+
+/** Nimmt das Gesammelte heraus, ohne es zu senden (es geht mit etwas anderem zusammen). */
+async function herausnehmen($: EngineInterface): Promise<Teil[]> {
+  zeitgeber?.cancel()
+  zeitgeber = null
+  const teile = sammlung?.teile ?? []
+  sammlung = null
+  await update($, wartendA, () => 0)
+  return teile
+}
+
+/**
+ * Ein Punkt ist beantwortet (text leer: ohne Nachricht). Sind damit alle Fragen seiner
+ * Runde beantwortet, geht das Gesammelte los, sonst nach WARTEZEIT ohne weitere Wahl.
+ */
+async function beantwortet($: EngineInterface, punkt: Punkt, text: string) {
+  if (sammlung !== null && sammlung.runde !== punkt.erstellt) await senden($)
+  const s = (sammlung ??= { runde: punkt.erstellt, beantwortet: new Set(), teile: [] })
+  s.beantwortet.add(punkt.id)
+  if (text !== '') s.teile.push({ titel: punkt.titel, text })
+  const rest = offene(await read($, punkteA)).filter(p => p.erstellt === s.runde && !s.beantwortet.has(p.id))
+  if (rest.length === 0) return senden($)
+  zeitgeber?.cancel()
+  zeitgeber = $.clock.after(WARTEZEIT, () => {
+    void senden($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+  })
+  await update($, wartendA, () => s.teile.length)
+}
+
+/** In die Eingabe statt abschicken: das Gesammelte plus diese Antwort, zum Ergaenzen. */
+async function vorbereiten($: EngineInterface, punkt: Punkt, text: string): Promise<string> {
+  const teile = [...(await herausnehmen($)), { titel: punkt.titel, text }]
+  const eingabe = sammelText(teile).trimEnd() + ' '
+  await $.prompt.fill({ text: eingabe, mode: 'replace' })
+  return eingabe
+}
+
 /** Die eigene Antwort abschicken: Punkt schliessen, Antwort an Claude. */
 async function eigeneAntwort($: EngineInterface, punkt: Punkt, text: string) {
   await update($, eigeneA, () => '')
   const t = text.trim()
   if (t === '') return
   await setzeStatus($, punkt.id, 'erledigt', `eigene Antwort: ${t}`)
-  await $.prompt.submit({ text: antwortAnfang(punkt) + t, asUser: true })
+  await beantwortet($, punkt, t)
 }
 
 /** Eine Wahl in der Frage eines Punkts ausfuehren. */
@@ -222,8 +279,7 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
       return
     }
     // Kein Textfeld (Handy): in der Eingabe vorbereiten; beim Abschicken schliesst sich der Punkt.
-    vorbereitet = { id: punkt.id, anfang: antwortAnfang(punkt) }
-    await $.prompt.fill({ text: antwortAnfang(punkt), mode: 'replace' })
+    vorbereitet = { id: punkt.id, anfang: await vorbereiten($, punkt, '') }
     return
   }
   if (wert.startsWith(BEFEHL)) {
@@ -234,27 +290,28 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
   }
   if (wert === SPAETER) {
     await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, zurueckgestellt: p.zurueckgestellt + 1 } : p)))
-    return
+    return beantwortet($, punkt, '')
   }
   if (wert === AKTUELL) {
     await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, ohneBezug: 0 } : p)))
     return
   }
-  if (wert === ERLEDIGT) return setzeStatus($, punkt.id, 'erledigt', 'als erledigt markiert')
-  if (wert === VERWERFEN) return setzeStatus($, punkt.id, 'verworfen', 'nicht relevant')
+  if (wert === ERLEDIGT || wert === VERWERFEN) {
+    await (wert === ERLEDIGT
+      ? setzeStatus($, punkt.id, 'erledigt', 'als erledigt markiert')
+      : setzeStatus($, punkt.id, 'verworfen', 'nicht relevant'))
+    return beantwortet($, punkt, '')
+  }
 
   const option = punkt.optionen[Number(wert)]
   if (option === undefined) return
   await setzeStatus($, punkt.id, 'erledigt', option.antwort !== '' ? `${option.label} – „${option.antwort}“` : option.label)
-  if (option.antwort === '') return
-  const text = antwortAnfang(punkt) + option.antwort
   if (brauchtErgaenzung(option.antwort)) {
-    // Braucht noch eigenen Text: in die Eingabe, ergaenzen und selbst abschicken.
-    await $.prompt.fill({ text: text.trimEnd() + ' ', mode: 'replace' })
+    // Braucht noch eigenen Text: mit dem Gesammelten in die Eingabe, ergaenzen und selbst abschicken.
+    await vorbereiten($, punkt, option.antwort)
     return
   }
-  // Als eigene Nachricht des Nutzers; laeuft gerade eine Antwort, kommt sie danach.
-  await $.prompt.submit({ text, asUser: true })
+  await beantwortet($, punkt, option.antwort)
 }
 
 function auswahl(punkt: Punkt) {
@@ -332,6 +389,11 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   const k = kommando(args)
   if (k.art === 'liste') return null
   if (k.art === 'fehler') return k.text
+  if (k.art === 'senden') {
+    const n = await read($, wartendA)
+    await senden($)
+    return n > 0 ? 'Gesammelte Antworten gesendet.' : 'Es wartet nichts.'
+  }
   if (k.art === 'leeren') {
     await aendere($, () => [])
     await update($, ueberblickA, () => '')
@@ -344,7 +406,8 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     const o = punkt.optionen[k.option ?? -1]
     if (o === undefined) return `„${punkt.titel}“ hat keine Antwort ${String.fromCharCode(97 + (k.option ?? 0))}) – ${optionenText(punkt)}`
     await waehlen($, punkt, String(k.option), false)
-    return `„${punkt.titel}“: ${o.label}`
+    const wartet = await read($, wartendA)
+    return `„${punkt.titel}“: ${o.label}${wartet > 0 ? ` – wartet auf die übrigen Fragen (höchstens 30 s, oder /offen senden)` : ''}`
   }
   const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: SPAETER, aktuell: AKTUELL }[k.tun]
   await waehlen($, punkt, wert, false)
@@ -360,6 +423,8 @@ export const register: Register = (on, options) => {
   laeuft = false
   vorbereitet = null
   ort = null
+  sammlung = null
+  zeitgeber = null
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -391,6 +456,13 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // Nur was der Nutzer selbst schreibt - eine Antwort aus der Auswahl kennt Haiku schon.
     if (e.origin.kind === 'composer') {
+      // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
+      const teile = sammlung !== null && sammlung.teile.length > 0 ? await herausnehmen($).catch(() => []) : []
+      if (teile.length > 0) {
+        const text = `${sammelText(teile)}\n\n${e.text}`
+        letzteEingabe = text
+        return next({ ...e, text })
+      }
       letzteEingabe = e.text
       const v = vorbereitet
       if (v !== null && e.text.startsWith(v.anfang)) {
@@ -460,6 +532,7 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = els
     const k = kopf(punkt)
+    const wartend = await read($, wartendA)
 
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={k.farbe} paddingX={1}>
@@ -470,6 +543,12 @@ export const register: Register = (on, options) => {
         </Text>
         <Text wrap="wrap">{punkt.frage}</Text>
         {(punkt.anleitung ?? '') !== '' && <Markdown key={`anleitung-${punkt.id}`} text={punkt.anleitung} />}
+        {wartend > 0 && (
+          <Box key="wartend" flexDirection="row">
+            <Text color="cyan">{wartend === 1 ? '1 Antwort wartet' : `${wartend} Antworten warten`} auf die übrigen Fragen (höchstens 30 s) </Text>
+            <Button key="senden" label="Jetzt senden" onPress={() => void senden($)} />
+          </Box>
+        )}
         <Box flexDirection="row">
           {wahl($, els, e.surface, `wahl-${punkt.id}`, punkt, await read($, eigeneA))}
           <Text> </Text>
