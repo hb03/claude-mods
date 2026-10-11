@@ -190,8 +190,8 @@ test('Punkte landen in offen.md, Antworten mit Abwägung im Tagesverlauf, die Au
   expect(dateien.get('/projekt/offene-punkte/offen.md')).toContain('### 1. Ausrollen')
   await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
   await ui.unmount()
-  // Erst wenn die Antwort bei Claude ist, schließt sich der Punkt.
-  await uhr.settle()
+  // Erst wenn die Antwort bei Claude ist (alle beantwortet: nach 5 s), schließt sich der Punkt.
+  await uhr.advance(5_000)
 
   const verlauf = [...dateien.entries()].find(([k]) => /antworten-\d{4}-\d\d-\d\d\.md$/.test(k))?.[1] ?? ''
   expect(verlauf).toContain('Ausrollen – entschieden')
@@ -225,7 +225,7 @@ test('eigene Antwort: Textfeld unter der Auswahl, Enter schickt ab und schließt
   const feld = await ui.find({ type: 'Input' })
   expect(feld).toBeDefined()
   await $.ui.input({ plugin: 'offene-punkte', key: String((feld as { key?: string }).key), text: 'Erst morgen früh.' } as never)
-  await uhr.settle()
+  await uhr.advance(5_000)
   expect(gesendet).toEqual(['Zum offenen Punkt „Ausrollen“: Erst morgen früh.'])
   await ui.unmount()
   const danach = await $.ui.mount(band('terminal') as never)
@@ -322,8 +322,11 @@ test('zwei Fragen einer Runde: die erste Antwort wartet, beide gehen als eine Na
   // Die Nummern bleiben: "Ausrollen" ist weiter Nummer 2; Nummer 1 ist schon beantwortet.
   const r2 = await $.command.run({ command: 'offen', args: '1 a' } as never)
   expect(String((r2 as { text?: string }).text)).toContain('schon beantwortet')
-  await $.command.run({ command: 'offen', args: '2 a' } as never)
-  await uhr.settle()
+  const r3 = await $.command.run({ command: 'offen', args: '2 a' } as never)
+  expect(String((r3 as { text?: string }).text)).toContain('alle Fragen beantwortet, geht in 5 s an Claude')
+  await uhr.advance(4_000)
+  expect(gesendet).toEqual([])
+  await uhr.advance(1_000)
   expect(gesendet).toEqual(['Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'])
 })
 
@@ -336,11 +339,11 @@ test('ohne weitere Wahl geht das Gesammelte nach 30 Sekunden los; "Schon erledig
   expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
 })
 
-test('eine Antwort ohne Text schließt die Runde und schickt das Gesammelte sofort', async ($, on) => {
+test('eine Antwort ohne Text schließt die Runde; das Gesammelte geht nach 5 s', async ($, on) => {
   const { uhr, gesendet } = await zweiFragen($, on)
   await $.command.run({ command: 'offen', args: '1 a' } as never)
   await $.command.run({ command: 'offen', args: '2 b' } as never)
-  await uhr.settle()
+  await uhr.advance(5_000)
   expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
 })
 
@@ -424,7 +427,7 @@ test('Fragen aus zwei Auswertungen gehen zusammen; Haiku erfährt danach, was be
   await uhr.settle()
   expect(gesendet).toEqual([])
   await $.command.run({ command: 'offen', args: '2 a' } as never)
-  await uhr.settle()
+  await uhr.advance(5_000)
   const nachricht = 'Zu den offenen Punkten:\n- „Erste“: Ja, die erste.\n- „Zweite“: Ja, die zweite.'
   expect(gesendet).toEqual([nachricht])
 
@@ -532,4 +535,104 @@ describe('Möglichkeiten', () => {
     }))
     expect(a?.neu[0]?.optionen.map(o => o.label)).toEqual(['Log ist sauber', 'Übernimm: nur prüfen'])
   })
+})
+
+// ---------------------------------------------------------------- 0.7.0: alle beantwortet – abschicken?
+
+async function vorgelegt($: Parameters<TestBody>[0], on: On) {
+  const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+  const box = { text: '' }
+  grundlage(on, new Map(), box)
+  on('prompt.edit', (_, e) => ({ text: e.text + e.inputText, cursor: e.cursor + 1 }) as never)
+  on('model.complete', () => ({ value: { isAnswered: true, text: ZWEI } }) as never)
+  on('prompt.fill', (_, e) => {
+    box.text = e.mode === 'append' ? box.text + e.text : e.text
+    return { isFilled: true } as never
+  })
+  const gesendet: string[] = []
+  on('prompt.submit', (_, e) => {
+    gesendet.push(e.text)
+    return { text: e.text } as never
+  })
+  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+  await $.command.run({ command: 'offen', args: '1 b' } as never)
+  const r = await $.command.run({ command: 'offen', args: '2 a' } as never)
+  await uhr.settle()
+  return { uhr, box, gesendet, r: String((r as { text?: string }).text) }
+}
+
+const NACHRICHT = 'Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'
+
+test('alle beantwortet: die Antworten stehen in der Eingabe, das Band zählt 5 s herunter, dann gehen sie ab', async ($, on) => {
+  const { uhr, box, gesendet, r } = await vorgelegt($, on)
+  expect(r).toContain('Enter schickt sofort')
+  expect(box.text).toBe(NACHRICHT)
+  expect(gesendet).toEqual([])
+
+  const ui = await $.ui.mount(band('terminal') as never)
+  expect(await ui.find({ type: 'Text', text: /Alle Fragen beantwortet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /in 5 s an Claude/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: 'Jetzt senden' })).toBeDefined()
+  await ui.unmount()
+
+  await uhr.advance(2_000)
+  const spaeter = await $.ui.mount(band('terminal') as never)
+  expect(await spaeter.find({ type: 'Text', text: /in 3 s an Claude/ })).toBeDefined()
+  await spaeter.unmount()
+
+  await uhr.advance(3_000)
+  expect(gesendet).toEqual([NACHRICHT])
+  expect(box.text).toBe('')
+  const liste = await $.command.run({ command: 'offen', args: '' } as never)
+  expect(String((liste as { text?: string }).text)).toContain('Nichts offen.')
+  const leer = await $.ui.mount(band('terminal') as never)
+  expect(await leer.find({ type: 'Text', text: /Alle Fragen beantwortet/ })).toBeUndefined()
+  await leer.unmount()
+})
+
+test('Enter schickt die vorgelegten Antworten sofort – und nach 5 s nicht noch einmal', async ($, on) => {
+  const { uhr, box, gesendet } = await vorgelegt($, on)
+  await $.prompt.submit({ text: box.text, origin: { kind: 'composer' } } as never)
+  box.text = ''
+  await uhr.advance(10_000)
+  expect(gesendet).toEqual([NACHRICHT])
+  const liste = await $.command.run({ command: 'offen', args: '' } as never)
+  expect(String((liste as { text?: string }).text)).toContain('Nichts offen.')
+})
+
+test('Tippen in der Eingabe hält den Countdown an; geändert geht nichts von selbst', async ($, on) => {
+  const { uhr, box, gesendet } = await vorgelegt($, on)
+  await $.prompt.edit({ origin: { kind: 'composer' }, text: box.text, cursor: box.text.length, start: box.text.length, end: box.text.length, inputText: '!' } as never)
+  // Die Eingabe bleibt hier unverändert: angehalten hat allein das Tippen.
+  await uhr.advance(10_000)
+  expect(gesendet).toEqual([])
+  const ui = await $.ui.mount(band('terminal') as never)
+  expect(await ui.find({ type: 'Text', text: /Alle Fragen beantwortet/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('ist die Eingabe belegt, bleibt sie unberührt; die Antworten gehen nach 5 s als eigene Nachricht', async ($, on) => {
+  const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+  const box = { text: 'Halb getippt' }
+  grundlage(on, new Map(), box)
+  on('model.complete', () => ({ value: { isAnswered: true, text: ZWEI } }) as never)
+  on('prompt.fill', (_, e) => {
+    box.text = e.text
+    return { isFilled: true } as never
+  })
+  const gesendet: string[] = []
+  on('prompt.submit', (_, e) => {
+    gesendet.push(e.text)
+    return { text: e.text } as never
+  })
+  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+  await $.command.run({ command: 'offen', args: '1 b' } as never)
+  await $.command.run({ command: 'offen', args: '2 a' } as never)
+  await uhr.advance(4_000)
+  expect(gesendet).toEqual([])
+  await uhr.advance(1_000)
+  expect(gesendet).toEqual([NACHRICHT])
+  expect(box.text).toBe('Halb getippt')
 })

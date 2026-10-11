@@ -98,6 +98,11 @@ declare module 'claude-code' {
       spaeter: string
       /** Warnungen von kontext-anzeige, die der Nutzer ausgeblendet hat (Schlüssel). */
       warnungenAus: string[]
+      /**
+       * Alle Fragen beantwortet: Sekunden, bis die Antworten von selbst abgehen (0: kein
+       * Countdown). Mit `inEingabe` stehen sie in der Eingabe, und Enter schickt sofort.
+       */
+      abschicken: { sekunden: number; inEingabe: boolean }
     }
     /** Gelesen, nicht geschrieben: die aktuellen Hinweise von kontext-anzeige (ab 0.4.0). */
     'kontext-anzeige': {

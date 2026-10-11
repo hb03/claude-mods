@@ -18,7 +18,7 @@
       "name": "offene-punkte",
       "source": "./plugins/offene-punkte",
       "description": "Mod: erkennt nach jeder Antwort offene Punkte (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; führt einen Überblick über die Sitzung. /offen, /zusammenfassung. Auswertung über Haiku.",
-      "version": "0.6.3",
+      "version": "0.7.0",
       "category": "mod"
     },
     {

@@ -1,6 +1,6 @@
 {
   "name": "offene-punkte",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung, blockierende zuerst – und stellt sie über der Eingabe, immer auch mit eigener Antwort. Die Liste geht je Projekt in die nächste Sitzung mit, Entscheidungen landen mit Gründen in einem Tagesverlauf. /offen zeigt und bedient alles, /zusammenfassung fasst die Sitzung zusammen. Auswertung über Haiku.",
   "types": "./types/index.d.ts",
   "userConfig": {

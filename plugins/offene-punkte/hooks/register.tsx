@@ -28,6 +28,7 @@ const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const
 const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
 const spaeterA = atom({ plugin: 'offene-punkte', key: 'spaeter' } as const, '')
 const warnungenAusA = atom({ plugin: 'offene-punkte', key: 'warnungenAus' } as const, [])
+const abschickenA = atom({ plugin: 'offene-punkte', key: 'abschicken' } as const, { sekunden: 0, inEingabe: false })
 // Gehoert kontext-anzeige (ab 0.4.0) und wird hier nur gelesen; ohne den Mod bleibt es leer.
 const warnungenA = atom({ plugin: 'kontext-anzeige', key: 'warnungen' } as const, [] as Warnung[])
 
@@ -60,6 +61,11 @@ let laeuft = false
 // letzten Wahl. Erst dann schliesst sich der Punkt. Spaeter, Schon erledigt und Nicht relevant
 // brauchen keine Nachricht und wirken sofort.
 let zeitgeber: Timer | null = null
+// Alle Fragen beantwortet: noch ABSCHICKEN_NACH Sekunden Zeit (Enter schickt sofort), dann geht es los.
+const ABSCHICKEN_NACH = 5
+let ticker: Timer | null = null
+// Was wir dafuer in die Eingabe gelegt haben; leer: die Eingabe war belegt, es bleibt bei der Sammlung.
+let vorschlag = ''
 // Gerade abgeschickt, Antwort der Engine steht noch aus: nicht ein zweites Mal senden.
 const unterwegs = new Set<string>()
 // Wo die Dateien liegen; einmal je Sitzung ermittelt.
@@ -289,10 +295,11 @@ type Wahl = { status: Ausstehend['status']; label: string; text: string }
 const ergebnis = (w: Wahl, text: string) => (text !== '' ? `${w.label} – „${text}“` : w.label)
 
 /** Das Gesammelte als eine Nachricht an Claude; die Punkte schliessen sich, sobald sie angekommen ist. */
-async function senden($: EngineInterface) {
+async function senden($: EngineInterface, wo: 'sammlung' | 'eingabe' = 'sammlung') {
   zeitgeber?.cancel()
   zeitgeber = null
-  const liste = gesammelt(await read($, punkteA))
+  await anhalten($)
+  const liste = ausstehende(await read($, punkteA), wo).filter(p => !unterwegs.has(p.id))
   if (liste.length === 0) return
   const ids = new Set(liste.map(p => p.id))
   for (const id of ids) unterwegs.add(id)
@@ -322,11 +329,64 @@ async function weiter($: EngineInterface) {
   const punkte = await read($, punkteA)
   if (gesammelt(punkte).length === 0) return
   const rest = fragbar(punkte, await sicht($)).filter(p => !istVeraltet(p) && p.zurueckgestellt === 0)
-  if (rest.length === 0) return senden($)
+  if (rest.length === 0) return alleBeantwortet($)
   zeitgeber?.cancel()
   zeitgeber = $.clock.after(WARTEZEIT, () => {
     void senden($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
   })
+}
+
+/**
+ * Die letzte offene Frage ist beantwortet: die Antworten kommen in die leere Eingabe (Enter
+ * schickt sofort) und gehen nach ABSCHICKEN_NACH Sekunden von selbst los. Ist die Eingabe
+ * belegt oder laesst sie sich nicht fuellen, bleiben sie gesammelt - ebenfalls mit Countdown.
+ */
+async function alleBeantwortet($: EngineInterface) {
+  zeitgeber?.cancel()
+  zeitgeber = null
+  const mit = gesammelt(await read($, punkteA))
+  if (mit.length === 0) return
+  const box = await $.prompt.read().catch(() => null)
+  vorschlag = ''
+  if (box !== null && box.text.trim() === '') {
+    const text = sammelText(teileVon(mit))
+    const r = await $.prompt.fill({ text, mode: 'replace' }).catch(() => null)
+    if (r !== null && r.isFilled) {
+      vorschlag = text
+      const ids = new Set(mit.map(p => p.id))
+      await aendere($, l => l.map(p => (ids.has(p.id) && p.ausstehend !== undefined ? { ...p, ausstehend: { ...p.ausstehend, wo: 'eingabe' as const } } : p)))
+    }
+  }
+  await zaehlen($, ABSCHICKEN_NACH)
+}
+
+async function zaehlen($: EngineInterface, n: number) {
+  ticker?.cancel()
+  ticker = null
+  if (n <= 0) return abschicken($)
+  await update($, abschickenA, () => ({ sekunden: n, inEingabe: vorschlag !== '' }))
+  ticker = $.clock.after(1000, () => {
+    void zaehlen($, n - 1).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+  })
+}
+
+/** Countdown aus; was in der Eingabe steht, bleibt dort und geht mit Enter. */
+async function anhalten($: EngineInterface) {
+  ticker?.cancel()
+  ticker = null
+  if ((await read($, abschickenA)).sekunden !== 0) await update($, abschickenA, () => ({ sekunden: 0, inEingabe: false }))
+}
+
+/** Countdown abgelaufen oder "Jetzt senden": abschicken, was wartet. */
+async function abschicken($: EngineInterface) {
+  const text = vorschlag
+  vorschlag = ''
+  if (text === '') return senden($)
+  // Nur, wenn noch genau unser Text in der Eingabe steht - sonst hat der Nutzer uebernommen.
+  const box = await $.prompt.read().catch(() => null)
+  if (box === null || box.text.trimEnd() !== text.trimEnd()) return anhalten($)
+  await $.prompt.fill({ text: '', mode: 'replace' })
+  await senden($, 'eingabe')
 }
 
 /** Text in die Eingabe: eine leere bekommt ihn ganz, an Angefangenes kommt er in einer neuen Zeile. */
@@ -343,6 +403,8 @@ async function eintragen($: EngineInterface, text: string) {
 async function inEingabe($: EngineInterface, punkt: Punkt, w: Wahl) {
   zeitgeber?.cancel()
   zeitgeber = null
+  vorschlag = ''
+  await anhalten($)
   const mit = gesammelt(await read($, punkteA))
   const ids = new Set(mit.map(p => p.id))
   await aendere($, liste => {
@@ -533,6 +595,10 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   if (k.art === 'fehler') return k.text
   if (k.art === 'senden') {
     const n = gesammelt(await read($, punkteA)).length
+    if (vorschlag !== '') {
+      await abschicken($)
+      return 'Vorgelegte Antworten gesendet.'
+    }
     await senden($)
     return n > 0 ? 'Gesammelte Antworten gesendet.' : 'Es wartet nichts.'
   }
@@ -558,6 +624,10 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     if (o === undefined) return `„${punkt.titel}“ hat keine Antwort ${String.fromCharCode(97 + (k.option ?? 0))}) – ${optionenText(punkt)}`
     await waehlen($, punkt, String(k.option), false)
     const wartet = gesammelt(await read($, punkteA)).length
+    const ab = await read($, abschickenA)
+    if (ab.sekunden > 0) {
+      return `„${punkt.titel}“: ${o.label} – alle Fragen beantwortet, geht in ${ab.sekunden} s an Claude${ab.inEingabe ? ' (steht in der Eingabe, Enter schickt sofort)' : ' (oder /offen senden)'}`
+    }
     return `„${punkt.titel}“: ${o.label}${wartet > 0 ? ` – wartet auf die übrigen Fragen (höchstens 30 s, oder /offen senden)` : ''}`
   }
   const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: ANS_ENDE, aktuell: AKTUELL }[k.tun]
@@ -607,6 +677,10 @@ export const register: Register = (on, options) => {
       ort = null
       zeitgeber?.cancel()
       zeitgeber = null
+      vorschlag = ''
+      ticker?.cancel()
+      ticker = null
+      $.clock.after(0, () => void update($, abschickenA, () => ({ sekunden: 0, inEingabe: false })))
       // Antworten, die noch nicht bei Claude sind, gehoeren zur alten Unterhaltung: wieder fragen.
       $.clock.after(0, () => {
         void (async () => {
@@ -624,6 +698,11 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     // Nur was der Nutzer selbst schreibt - eine Antwort aus der Auswahl kennt Haiku schon.
     if (e.origin.kind !== 'composer') return next(e)
+    // Selbst abgeschickt (z. B. Enter auf die vorgelegten Antworten): kein Countdown mehr.
+    vorschlag = ''
+    ticker?.cancel()
+    ticker = null
+    $.clock.after(0, () => void update($, abschickenA, () => ({ sekunden: 0, inEingabe: false })))
     const punkte = await read($, punkteA).catch((): Punkt[] => [])
     const mit = gesammelt(punkte)
     const eingabe = ausstehende(punkte, 'eingabe')
@@ -656,6 +735,15 @@ export const register: Register = (on, options) => {
         .catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     })
     return r
+  })
+
+  // Tippt der Nutzer in die vorgelegten Antworten, laeuft kein Countdown mehr: er schickt selbst ab.
+  on('prompt.edit', async ($, e, next) => {
+    if (ticker !== null && vorschlag !== '') {
+      vorschlag = ''
+      await anhalten($)
+    }
+    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -719,7 +807,8 @@ export const register: Register = (on, options) => {
     const fragen = fragenAnzeigen && !(await read($, ausgeblendetA))
     const liste = fragen ? fragbar(alle, s) : []
     const punkt = liste[0]
-    if (punkt === undefined && zeigen.length === 0) return next(e)
+    const ab = await read($, abschickenA)
+    if (punkt === undefined && zeigen.length === 0 && ab.sekunden === 0) return next(e)
 
     const els = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = els
@@ -731,6 +820,24 @@ export const register: Register = (on, options) => {
         <Button key={`aus-${w.schluessel}`} label="Ausblenden" onPress={() => void update($, warnungenAusA, l => [...l, w.schluessel])} />
       </Box>
     ))
+    if (punkt === undefined && ab.sekunden > 0) {
+      const n = gesammelt(alle).length + ausstehende(alle, 'eingabe').length
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1}>
+          {warnZeilen}
+          <Text>
+            <Text color="green" bold>✓ Alle Fragen beantwortet</Text>
+            <Text>{` – ${n === 1 ? 'die Antwort geht' : `${n} Antworten gehen`} in ${ab.sekunden} s an Claude.`}</Text>
+          </Text>
+          <Box flexDirection="row">
+            <Text dimColor>{ab.inEingabe ? 'Steht in der Eingabe: Enter schickt sofort, Tippen hält an. ' : ''}</Text>
+            <Button key="jetzt" label="Jetzt senden" variant="primary" onPress={() => void abschicken($)} />
+            {ab.inEingabe && <Text> </Text>}
+            {ab.inEingabe && <Button key="anhalten" label="Anhalten" onPress={() => { vorschlag = ''; void anhalten($) }} />}
+          </Box>
+        </Box>
+      )
+    }
     if (punkt === undefined) return <Box flexDirection="column" paddingX={1}>{warnZeilen}</Box>
 
     const k = kopf(punkt)
