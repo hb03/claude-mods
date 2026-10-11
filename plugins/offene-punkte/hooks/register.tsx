@@ -6,7 +6,7 @@ import {
   AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   kommando, lies, mitCompact, monatsKopf, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
-  uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
+  ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
 } from './logik'
 import type { Ruhezeit, Sicht, Teil } from './logik'
 
@@ -265,6 +265,15 @@ async function wiederOeffnen($: EngineInterface, id: string) {
     const { ergebnis: _e, nr: _n, ruht: _r, ...rest } = p
     return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0, sitzung }
   })))
+}
+
+/** Ruht ein Punkt, wird er gleich wieder gefragt. */
+async function aufnehmen($: EngineInterface, id: string) {
+  await aendere($, liste => liste.map(p => {
+    if (p.id !== id) return p
+    const { ruht: _r, ...rest } = p
+    return rest
+  }))
 }
 
 const teileVon = (punkte: readonly Punkt[]): Teil[] => punkte.map(p => ({ titel: p.titel, text: p.ausstehend?.text ?? '' }))
@@ -670,12 +679,18 @@ export const register: Register = (on, options) => {
     const kopfzeile = ueberblick !== '' ? `Überblick:\n${ueberblick}\n\n` : ''
     const fuss = o !== null ? `\n\nDatei: ${o.ordner}/offen.md · Verlauf: antworten-JJJJ-MM-TT.md` : ''
     if (liste.length === 0) return { text: `${kopfzeile}Nichts offen.${fuss}` }
+    const aktiv = liste.filter(p => !ruht(p, s))
+    const ruhend = liste.filter(p => ruht(p, s))
 
+    const aktivText = aktiv.length === 0 ? 'Gerade ist nichts dran.' : aktiv.map((p, i) => {
+      const anleitung = (p.anleitung ?? '') !== '' ? `\n${p.anleitung.replace(/^/gm, '   ')}` : ''
+      return `${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p, s)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
+    }).join('\n')
+    // Zurueckgelegtes nur mit Titel und Termin, damit es nicht wie eine offene Frage aussieht.
+    const ruhendText = ruhend.length === 0 ? '' : `\n\nZurückgelegt (${ruhend.length}):\n` + ruhend
+      .map((p, i) => `${p.nr ?? i + 1}. ${p.titel} – ${ruheVermerk(p, s)}`).join('\n')
     return {
-      text: kopfzeile + liste.map((p, i) => {
-        const anleitung = (p.anleitung ?? '') !== '' ? `\n${p.anleitung.replace(/^/gm, '   ')}` : ''
-        return `${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p, s)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
-      }).join('\n') + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später${fuss}`,
     }
   })
 
@@ -751,7 +766,8 @@ export const register: Register = (on, options) => {
     const [punkte, prueft, ueberblick, eigene, spaeter, s] = await Promise.all([
       read($, punkteA), read($, prueftA), read($, ueberblickA), read($, eigeneA), read($, spaeterA), sicht($),
     ])
-    const liste = offene(punkte)
+    const liste = offene(punkte).filter(p => !ruht(p, s))
+    const ruhend = offene(punkte).filter(p => ruht(p, s))
     const fertig = punkte.filter(p => p.status !== 'offen').slice(-8).reverse()
 
     return (
@@ -763,7 +779,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         {prueft && <Text dimColor>prüft die letzte Antwort …</Text>}
-        {liste.length === 0 && <Text dimColor>Nichts offen.</Text>}
+        {liste.length === 0 && <Text dimColor>{ruhend.length > 0 ? 'Gerade ist nichts dran.' : 'Nichts offen.'}</Text>}
         {liste.map((p, i) => (
           <Box key={p.id} flexDirection="column" borderStyle="round" borderColor={kopf(p).farbe} borderDimColor={istVeraltet(p)} paddingX={1}>
             <Text>
@@ -777,6 +793,14 @@ export const register: Register = (on, options) => {
             {fremd(p, s.sitzung)
               ? <Button key={`hier-${p.id}`} label="Hier übernehmen" onPress={() => void aendere($, l => l.map(x => (x.id === p.id ? { ...x, sitzung } : x)))} />
               : wahl($, els, e.surface, `liste-${p.id}`, p, eigene, spaeter)}
+          </Box>
+        ))}
+        {ruhend.length > 0 && <Text key="ruhend-kopf" dimColor>— zurückgelegt ({ruhend.length}) —</Text>}
+        {ruhend.map(p => (
+          <Box key={`r-${p.id}`} flexDirection="row" flexWrap="wrap">
+            <Text dimColor>⏸ {p.titel} · {ruheVermerk(p, s)}</Text>
+            <Text> </Text>
+            <Button key={`aufnehmen-${p.id}`} label="Jetzt aufnehmen" onPress={() => void aufnehmen($, p.id)} />
           </Box>
         ))}
         {fertig.length > 0 && <Text dimColor>— zuletzt erledigt —</Text>}

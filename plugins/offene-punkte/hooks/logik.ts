@@ -404,7 +404,7 @@ export const tagText = (ms: number): string => {
 }
 
 /** "ruht bis …" – ohne bekannte Sitzung (in der Datei) auch der Vermerk für die nächste Sitzung. */
-function ruheVermerk(p: Punkt, s: Sicht): string {
+export function ruheVermerk(p: Punkt, s: Sicht): string {
   if (p.ruht === undefined) return ''
   if (p.ruht.bis !== undefined) return p.ruht.bis > s.jetzt ? `ruht bis ${tagText(p.ruht.bis)}` : ''
   return s.sitzung === '' || p.ruht.sitzung === s.sitzung ? 'ruht bis zur nächsten Sitzung' : ''

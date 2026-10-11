@@ -481,3 +481,40 @@ test('Ergänzen: Gesammeltes und spätere Antworten kommen in die Eingabe; Herau
   expect(await pane.find({ type: 'Text', text: /Grund: Erklären – „Weil: billiger.“/ })).toBeDefined()
   await pane.unmount()
 })
+
+test('/offen: zurückgelegte Punkte stehen gedämpft für sich, ohne Auswahl, und lassen sich wieder aufnehmen', async ($, on) => {
+  const jetzt = 1_800_000_000_000
+  const uhr = mock.clock(on, { now: jetzt })
+  const dateien = new Map<string, string>([
+    ['/projekt/offene-punkte/offen.md', ablageText({
+      punkte: [
+        punkt('dran', { titel: 'Sitemap einreichen', nr: 1 }),
+        punkt('ruht', { titel: 'Logo tauschen', nr: 2, ruht: { bis: jetzt + 3 * 86_400_000 } }),
+      ],
+      ueberblick: '',
+    }, 1)],
+  ])
+  grundlage(on, dateien)
+  on('session.start', (_, e) => ({ cwd: e.cwd }) as never)
+  await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+  await uhr.settle()
+
+  const text = String(((await $.command.run({ command: 'offen', args: '' } as never)) as { text?: string }).text)
+  expect(text).toMatch(/1\. Sitemap einreichen[\s\S]*Zurückgelegt \(1\):\n2\. Logo tauschen – ruht bis /)
+  expect(text).not.toContain('Logo tauschen (')
+
+  const pane = await $.ui.mount({ plugin: 'offene-punkte', surface: 'terminal', component: 'Pane', requestId: 'offene-punkte', props: {} } as never)
+  expect(await pane.find({ type: 'Text', text: /zurückgelegt \(1\)/ })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /⏸ Logo tauschen · ruht bis / })).toBeDefined()
+  // Nur der laufende Punkt hat eine Auswahl.
+  expect((await pane.findAll({ type: 'Select' })).length).toBe(1)
+  const auf = await pane.find({ type: 'Button', text: 'Jetzt aufnehmen' })
+  expect(auf).toBeDefined()
+  await pane.press({ key: String((auf as { key?: string }).key) })
+  await uhr.settle()
+  await pane.unmount()
+
+  const danach = String(((await $.command.run({ command: 'offen', args: '' } as never)) as { text?: string }).text)
+  expect(danach).not.toContain('Zurückgelegt')
+  expect(danach).toContain('2. Logo tauschen')
+})
