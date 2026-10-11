@@ -23,6 +23,8 @@ const verlaufA = atom({ plugin: 'kontext-anzeige', key: 'verlauf' } as const, []
 const jetztA = atom({ plugin: 'kontext-anzeige', key: 'jetzt' } as const, 0)
 const arbeitetA = atom({ plugin: 'kontext-anzeige', key: 'arbeitet' } as const, false)
 const modellA = atom({ plugin: 'kontext-anzeige', key: 'modell' } as const, null)
+// Die aktuellen Hinweise; offene-punkte liest sie und zeigt die Warnungen über der Eingabe.
+const warnungenA = atom({ plugin: 'kontext-anzeige', key: 'warnungen' } as const, [])
 
 const TAKT_MS = 30_000
 
@@ -50,7 +52,9 @@ let takt: { cancel: () => void } | undefined
 let letzterStatus: string | undefined
 // Fernsteuerung (claude.ai, App): die Engine zählt sie nicht als Oberfläche, sie zeigt die Zeile aber nicht.
 let fernsteuerung = false
-let zeileUeberEingabe = false
+// Probe von /kontext test: so lange steht der Probetext in der Statuszeile.
+const PROBE_MS = 30_000
+let probeBis = 0
 // Datei, aus der die Statuszeile (~/.claude/statusline.sh) die Werte des Mods liest; gesetzt in session.start.
 let statusDatei: string | undefined
 let letzterDateiInhalt: string | undefined
@@ -70,7 +74,9 @@ async function pruefeHinweise($: EngineInterface) {
       await $.ui.notify(x.text, { title: 'Claude: Cache' }).catch(() => undefined)
     }
   }
-  await spiegeleStatus($, m, c, jetzt, arbeitet, aktuell, await read($, modellA))
+  const warnungen = arbeitet ? [] : aktuell.map(({ schluessel, stufe, text }) => ({ schluessel, stufe, text }))
+  if (JSON.stringify(warnungen) !== JSON.stringify(await read($, warnungenA))) await update($, warnungenA, () => warnungen)
+  if (jetzt >= probeBis) await spiegeleStatus($, m, c, jetzt, arbeitet, aktuell, await read($, modellA))
   await schreibeStatusDatei($, m, c, arbeitet, aktuell)
 }
 
@@ -124,6 +130,37 @@ async function spiegeleStatus(
   $.ui.status(text)
 }
 
+/**
+ * /kontext test: je eine Einblendung, Statuszeile und Systemmeldung zur Probe - zeigt, was auf
+ * der gerade verbundenen Oberfläche (Handy, Fernsteuerung, VS Code) ankommt.
+ */
+async function probe($: EngineInterface): Promise<string> {
+  const flaechen = await $.session.surfaces()
+  const jetzt = await $.clock.now()
+  probeBis = jetzt + PROBE_MS
+  $.ui.toast('Probe 1/3: Einblendung von kontext-anzeige', { timeoutMs: 15_000 })
+  letzterStatus = 'Probe 2/3: Statuszeile von kontext-anzeige'
+  $.ui.status(letzterStatus)
+  const meldung = await $.ui.notify('Probe 3/3: Systemmeldung von kontext-anzeige', { title: 'Claude: Probe' })
+    .then(() => 'abgeschickt', fehler => `nicht möglich (${String(fehler)})`)
+  // Danach wieder die echte Statuszeile.
+  $.clock.after(PROBE_MS, () => {
+    probeBis = 0
+    letzterStatus = undefined
+    void pruefeHinweise($).catch(() => undefined)
+  })
+
+  return [
+    '## Probe',
+    `Oberflächen: ${flaechen.join(', ') || 'keine'}${fernsteuerung ? ', Fernsteuerung' : ''}`,
+    '',
+    'Gerade verschickt – bitte auf jeder Oberfläche nachsehen, was davon ankommt:',
+    '1. Einblendung (Toast) „Probe 1/3“, 15 s lang',
+    '2. Statuszeile „Probe 2/3“, 30 s lang, danach wieder die normale Zeile',
+    `3. Systemmeldung „Probe 3/3“ – ${meldung}`,
+  ].join('\n')
+}
+
 async function messen($: EngineInterface, mitAufschluesselung: boolean) {
   const u = await $.session.usage(mitAufschluesselung ? { breakdown: 'summary' } : undefined)
   const b = u.context.breakdown
@@ -137,7 +174,7 @@ export const register: Register = (on, options) => {
   ttlEinstellung = String(options.cacheTtl ?? 'auto')
   warnProzent = Number(options.warnProzent ?? 60)
   systemMeldung = options.systemMeldung === true
-  zeileUeberEingabe = options.zeileUeberEingabe === true
+  probeBis = 0
   letzterDateiInhalt = undefined
   gezeigt.clear()
   fehlgriffErwartet = true
@@ -297,7 +334,8 @@ export const register: Register = (on, options) => {
     return next(e)
    }).catch(($, e, next) => next(e))
 
-  on('command.run', { command: 'kontext' }, async $ => {
+  on('command.run', { command: 'kontext' }, async ($, e) => {
+    if (e.args.trim() === 'test') return { text: await probe($) }
     const u = await $.session.usage({ breakdown: 'summary' })
     const [c, verlauf] = await Promise.all([read($, cacheA), read($, verlaufA)])
     const m = await read($, messungA)
@@ -367,44 +405,5 @@ export const register: Register = (on, options) => {
     z.push('', '## Empfehlung')
     z.push(tipps.length ? tipps.map(x => `- ${x.text}`).join('\n') : 'Nichts zu tun – weiterarbeiten.')
     return { text: z.join('\n') }
-  })
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const m = await read($, messungA)
-    if (!zeileUeberEingabe || e.props.hasSurvey || !m || m.tokens === undefined) return next(e)
-    const c = await read($, cacheA)
-    const jetzt = (await read($, jetztA)) || Date.now()
-    const arbeitet = e.props.isWorking
-    const breite = e.props.bodyColumns
-    const modell = await read($, modellA)
-    const teile = einpassen(segmente(m, c && c.letzteAntwortAm > 0 ? c : null, jetzt, arbeitet, warnProzent, modell), breite)
-    const tipps = arbeitet ? [] : hinweise(m, c && c.letzteAntwortAm > 0 ? c : null, jetzt, arbeitet, warnProzent)
-    const erster = tipps[0]
-    const { Box, Text } = $.ui.resolve(e)
-
-    return (
-      <Box flexDirection="column">
-        <Text wrap="truncate">
-          {teile.map((s, i) => (
-            <Text key={String(i)}>
-              {i > 0 ? <Text dimColor>{TRENNER}</Text> : ''}
-              {s.teile.map((x, j) => (
-                <Text key={String(j)} color={x.farbe} dimColor={x.dim} bold={x.bold}>
-                  {x.t}
-                </Text>
-              ))}
-            </Text>
-          ))}
-        </Text>
-        {erster ? (
-          <Text wrap="truncate">
-            <Text color={erster.stufe === 'warn' ? 'warning' : 'suggestion'}>{erster.stufe === 'warn' ? '▲ ' : '› '}</Text>
-            <Text color={erster.stufe === 'warn' ? 'warning' : undefined} dimColor={erster.stufe === 'info'}>
-              {erster.text}
-            </Text>
-          </Text>
-        ) : null}
-      </Box>
-    )
   })
 }

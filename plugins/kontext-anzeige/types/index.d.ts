@@ -34,6 +34,8 @@ declare module 'claude-code' {
       jetzt: number
       arbeitet: boolean
       modell: Modell | null
+      /** Die aktuellen Hinweise (leer, solange Claude arbeitet); offene-punkte zeigt die Warnungen. */
+      warnungen: { schluessel: string; stufe: 'info' | 'warn'; text: string }[]
     }
   }
 }

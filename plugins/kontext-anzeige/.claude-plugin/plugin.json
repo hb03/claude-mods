@@ -1,7 +1,7 @@
 {
   "name": "kontext-anzeige",
-  "version": "0.3.2",
-  "description": "Zeile über der Eingabe mit Kontextfüllung, Prompt-Cache, Auto-Compact und Limits, dazu Hinweise, wann /compact, /clear oder Weitermachen sinnvoll ist; /kontext zeigt Details.",
+  "version": "0.4.0",
+  "description": "Hinweise, wann /compact, /clear oder Weitermachen sinnvoll ist: Kontextfüllung, Prompt-Cache, Auto-Compact und Limits. Schreibt die Werte für die Statuszeile, die Warnungen zeigt offene-punkte über der Eingabe; /kontext zeigt Details, /kontext test probiert Einblendung, Statuszeile und Systemmeldung aus.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "cacheTtl": {
@@ -25,12 +25,6 @@
       "type": "boolean",
       "title": "Cache-Ablauf auch als Systemmeldung",
       "description": "Zusätzlich zur Einblendung eine Benachrichtigung über den eigenen Kanal",
-      "default": false
-    },
-    "zeileUeberEingabe": {
-      "type": "boolean",
-      "title": "Zeile über der Eingabe",
-      "description": "Eigene Zeile über der Eingabe. Normalerweise aus: die Werte zeigt die Statuszeile (statusline.sh), und die Zeile gehört offene-punkte",
       "default": false
     }
   }

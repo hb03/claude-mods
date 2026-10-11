@@ -11,7 +11,7 @@
       "name": "kontext-anzeige",
       "source": "./plugins/kontext-anzeige",
       "description": "Mod: Hinweise zu Kontext, Prompt-Cache, Auto-Compact und Limits; liefert Cache-Werte an ~/.claude/statusline.sh, optional eigene Zeile über der Eingabe; /kontext für Details.",
-      "version": "0.3.2",
+      "version": "0.4.0",
       "category": "mod"
     },
     {
