@@ -289,7 +289,7 @@ test('neue Sitzung übernimmt die Punkte aus offen.md; /offen 1 erledigt und Wie
 const ZWEI = JSON.stringify({
   neu: [
     { titel: 'Variante', art: 'entscheidung', frage: 'A oder B?', optionen: [{ label: 'A', antwort: 'Nimm A.' }, { label: 'B', antwort: 'Nimm B.' }] },
-    { titel: 'Ausrollen', art: 'entscheidung', frage: 'Gleich ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja, gleich.' }, { label: 'Später', antwort: '' }] },
+    { titel: 'Ausrollen', art: 'entscheidung', frage: 'Gleich ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja, gleich.' }, { label: 'Kein Rollout', antwort: '' }] },
   ],
   erledigt: [],
 })
@@ -517,4 +517,19 @@ test('/offen: zurückgelegte Punkte stehen gedämpft für sich, ohne Auswahl, un
   const danach = String(((await $.command.run({ command: 'offen', args: '' } as never)) as { text?: string }).text)
   expect(danach).not.toContain('Zurückgelegt')
   expect(danach).toContain('2. Logo tauschen')
+})
+
+describe('Möglichkeiten', () => {
+  test('was die festen Knöpfe schon abdecken, fällt weg; konkrete Übergaben bleiben', async () => {
+    const a = lies(JSON.stringify({
+      neu: [{
+        titel: 'Log prüfen', art: 'aufgabe', frage: 'Log sauber?',
+        optionen: [
+          { label: 'Erledige ich selbst', antwort: '' }, { label: 'Prüfe ich später', antwort: '' }, { label: 'Später', antwort: '' },
+          { label: 'Log ist sauber', antwort: 'Im Log steht nichts Neues.' }, { label: 'Übernimm: nur prüfen', antwort: 'Prüf du das Log, ändere nichts.' },
+        ],
+      }],
+    }))
+    expect(a?.neu[0]?.optionen.map(o => o.label)).toEqual(['Log ist sauber', 'Übernimm: nur prüfen'])
+  })
 })

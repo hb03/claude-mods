@@ -20,7 +20,16 @@ Jeder Punkt hat eine "stufe": "blockiert", wenn der Assistent ohne den Nutzer ni
 
 In "abwaegung" stehen die Argumente aus der Antwort, die für die Entscheidung zählen (Vor- und Nachteile, Gründe, Empfehlung des Assistenten), höchstens drei Sätze - damit man später nachvollziehen kann, warum so entschieden wurde. Nichts erfinden; gibt die Antwort keine Gründe her, bleibt es leer.
 
-Für jeden neuen Punkt: eine kurze Frage an den Nutzer und 2 bis 4 Antwortmöglichkeiten. Jede Möglichkeit hat ein kurzes "label" (höchstens 5 Wörter) und eine "antwort": der Satz, den der Nutzer dem Assistenten damit schickt (Ich-Form, konkret, z. B. "Ja, rolle es aus."). Hat der Nutzer etwas selbst zu tun, gib eine Möglichkeit mit leerer "antwort" und einem label wie "Erledige ich selbst". Braucht eine Antwort noch eine Eingabe des Nutzers (eigener Text, eine Zahl), ende die "antwort" mit einem Doppelpunkt - sie wird dann nur vorbereitet, nicht abgeschickt. Eine Möglichkeit für eine freie eigene Antwort brauchst du nicht, die gibt es immer.
+Für jeden neuen Punkt: eine kurze Frage an den Nutzer und 1 bis 4 Antwortmöglichkeiten (bei einem Angebot reicht oft eine: das konkrete Ja; ablehnen kann der Nutzer immer mit "Nicht relevant"). Jede Möglichkeit hat ein kurzes "label" (höchstens 6 Wörter) und eine "antwort": der Satz, den der Nutzer dem Assistenten damit schickt (Ich-Form, konkret, z. B. "Ja, rolle es aus."). Braucht eine Antwort noch eine Eingabe des Nutzers (eigener Text, eine Zahl, eine Fehlermeldung), ende die "antwort" mit einem Doppelpunkt - sie wird dann nur vorbereitet, nicht abgeschickt.
+
+Die Möglichkeiten müssen SPEZIFISCH sein, nicht allgemein:
+- Nenne die Dinge aus der Antwort beim Namen: Varianten, Dateien, Befehle, Zahlen, Ergebnisse. Schlecht: "Ja, so machen" / "Es gibt ein Problem". Gut: "Erst Lazy Loading, dann WebP" / "Mail liegt im Spam".
+- Bei einer Entscheidung: die echten Alternativen aus der Antwort, die Empfehlung des Assistenten zuerst; auch sinnvolle Kombinationen oder Abstufungen ("nur X", "X und Y").
+- Bei einer Aufgabe, die der Nutzer selbst tun oder prüfen muss: die möglichen ERGEBNISSE, die er zurückmeldet ("Push kam an", "Fehler beim Login:"), Fehlerfälle mit Doppelpunkt, damit er die Meldung einfügen kann.
+- AN DEN ASSISTENTEN ÜBERGEBEN: Könnte der Assistent die Aufgabe ganz oder teilweise selbst erledigen (Befehle ausführen, Dateien ändern, Logs oder Seiten prüfen, etwas nachsehen), gib eine oder mehrere Möglichkeiten, sie ihm zu übergeben - jede mit dem genauen Umfang, z. B. "Übernimm: nur prüfen" ("Prüf du das bitte, ändere aber noch nichts.") und "Übernimm: prüfen und beheben" ("Prüf das und behebe, was nicht stimmt."), oder "Übernimm mit Variante B". Keine solche Möglichkeit, wenn nur der Nutzer es kann (sein eigener Rechner, sein Postfach oder Konto, Zugangsdaten, persönliche Vorlieben) oder der Assistent ohnehin nur auf das Ja wartet.
+- ERST DURCHPLANEN: Ist eine Entscheidung unklar oder groß (mehrere zusammenhängende Fragen, Umfang oder Ziel noch offen, ein Umbau oder eine neue Funktion), gib zusätzlich die Möglichkeit "Erst Planungsinterview" mit der antwort "Lass uns das erst im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab." Bei einfachen Ja/Nein- oder A/B-Fragen nicht.
+
+Diese Möglichkeiten gibt es immer schon als feste Knöpfe, gib sie NICHT selbst an: freie eigene Antwort, "Später" (auch "mache/prüfe ich später"), "Schon erledigt", "Nicht relevant" (schließt ohne Nachricht - ein "Nein, so lassen" brauchst du nur, wenn das Nein dem Assistenten etwas mitteilt, das er wissen muss). Auch kein "Erledige ich selbst": das schließt den Punkt, bevor etwas getan ist.
 
 Außerdem führst du einen kurzen ÜBERBLICK über die ganze Sitzung, damit der Nutzer den Faden behält: Schreibe den bisherigen Überblick (unten) mit dem Neuen aus der Antwort fort. Markdown, höchstens 8 Zeilen, als Liste mit diesen fett gesetzten Anfängen, nur wenn es etwas dazu gibt: **Ziel:** worum es in der Sitzung geht · **Erledigt:** die wichtigsten Ergebnisse (knapp, neueste zuerst, Älteres zusammenfassen) · **Gerade:** woran zuletzt gearbeitet wurde · **Als Nächstes:** der nächste Schritt. Keine Wiederholung der offenen Punkte.
 
@@ -72,12 +81,15 @@ const text = (x: unknown, max: number): string => (typeof x === 'string' ? x.tri
 const stufe = (x: unknown): Stufe | undefined => (x === 'blockiert' || x === 'normal' || x === 'angebot' ? x : undefined)
 const ids = (x: unknown): string[] => (Array.isArray(x) ? x : []).filter((y): y is string => typeof y === 'string')
 
+/** Was die festen Knoepfe schon abdecken (Spaeter, Schon erledigt) - kommt es trotzdem, faellt es weg. */
+const DOPPELT = /^(später|(erledige|mache|prüfe|teste) ich (selbst|später)|(mache|prüfe|teste) ich selbst)$/i
+
 function optionenLesen(x: unknown): Option[] {
   const optionen: Option[] = []
   for (const o of Array.isArray(x) ? x : []) {
     if (typeof o !== 'object' || o === null) continue
     const label = text((o as Record<string, unknown>).label, 60)
-    if (label === '' || optionen.some(y => y.label === label)) continue
+    if (label === '' || DOPPELT.test(label) || optionen.some(y => y.label === label)) continue
     optionen.push({ label, antwort: text((o as Record<string, unknown>).antwort, 600) })
   }
   return optionen.slice(0, 4)
