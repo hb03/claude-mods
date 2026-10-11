@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Ausstehend, Punkt } from '../types'
+import type { Ausstehend, Punkt, Warnung } from '../types'
 import {
-  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig,
-  ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, nummerieren, offene, ordnerName,
-  sammelText, statuszeile, verlaufKopf, verlaufsEintraege, vermerk, zuruecknehmen, zusammenfuehren,
+  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
+  auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
+  kommando, lies, mitCompact, monatsKopf, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
+  uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
 } from './logik'
-import type { Teil } from './logik'
+import type { Ruhezeit, Sicht, Teil } from './logik'
 
 // Offene Punkte der Sitzung: nach jeder Antwort liest ein kleines Modell
 // (Haiku), was noch eine Entscheidung, Freigabe oder Zuarbeit des Nutzers
@@ -25,12 +26,18 @@ const prueftA = atom({ plugin: 'offene-punkte', key: 'prueft' } as const, false)
 const ausgeblendetA = atom({ plugin: 'offene-punkte', key: 'ausgeblendet' } as const, false)
 const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const, '')
 const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
+const spaeterA = atom({ plugin: 'offene-punkte', key: 'spaeter' } as const, '')
+const warnungenAusA = atom({ plugin: 'offene-punkte', key: 'warnungenAus' } as const, [])
+// Gehoert kontext-anzeige (ab 0.4.0) und wird hier nur gelesen; ohne den Mod bleibt es leer.
+const warnungenA = atom({ plugin: 'kontext-anzeige', key: 'warnungen' } as const, [] as Warnung[])
 
 // Feste Wahlmoeglichkeiten unter jeder Frage.
 // Steht vorgewaehlt in der Auswahl, damit dort nicht "none" erscheint; waehlt nichts.
 const KEINE = '__keine'
 const EIGENE = '__eigene'
 const SPAETER = '__spaeter'
+const ANS_ENDE = '__ende'
+const RUHE = '__ruhe:'
 const ERLEDIGT = '__erledigt'
 const VERWERFEN = '__verwerfen'
 const AKTUELL = '__aktuell'
@@ -57,10 +64,16 @@ let zeitgeber: Timer | null = null
 const unterwegs = new Set<string>()
 // Wo die Dateien liegen; einmal je Sitzung ermittelt.
 let ort: Promise<{ ordner: string } | null> | null = null
+// Die eigene Sitzung: Punkte anderer Sitzungen im selben Projekt werden nicht gefragt.
+let sitzung = ''
+
+async function sicht($: EngineInterface): Promise<Sicht> {
+  return { sitzung, jetzt: await $.clock.now() }
+}
 
 async function zeigeStatus($: EngineInterface) {
-  const [punkte, prueft] = await Promise.all([read($, punkteA), read($, prueftA)])
-  $.ui.status(statuszeile(punkte, prueft))
+  const [punkte, prueft, s] = await Promise.all([read($, punkteA), read($, prueftA), sicht($)])
+  $.ui.status(statuszeile(punkte, prueft, s))
 }
 
 // ---------------------------------------------------------------- Dateien
@@ -92,11 +105,21 @@ function ablageOrt($: EngineInterface) {
   return ort
 }
 
-async function speichern($: EngineInterface) {
+/**
+ * Schreibt offen.md. Vorher wird eingelesen, was dort steht: eine andere Sitzung im selben
+ * Projekt kann inzwischen Punkte angelegt oder geschlossen haben (abgleich: false beim Leeren).
+ */
+async function speichern($: EngineInterface, abgleich = true) {
   const o = await ablageOrt($)
   if (o === null) return
+  const datei = `${o.ordner}/offen.md`
+  if (abgleich) {
+    const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    const dort = text === '' ? null : ablageLesen(text)
+    if (dort !== null) await update($, punkteA, alt => abgleichen(alt, dort.punkte))
+  }
   const [punkte, ueberblick, jetzt] = await Promise.all([read($, punkteA), read($, ueberblickA), $.clock.now()])
-  await $.fs.write(`${o.ordner}/offen.md`, ablageText({ punkte, ueberblick }, jetzt))
+  await $.fs.write(datei, ablageText({ punkte, ueberblick }, jetzt))
     .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`))
 }
 
@@ -112,9 +135,9 @@ async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number
 /** Liste aendern; was dabei geschlossen oder wieder geoeffnet wird, geht in den Verlauf. Alles landet in der Datei. */
 async function aendere($: EngineInterface, fn: (liste: Punkt[]) => Punkt[]): Promise<Punkt[]> {
   const vorher = await read($, punkteA)
-  await update($, punkteA, alt => fn(alt))
-  const nachher = await read($, punkteA)
   const jetzt = await $.clock.now()
+  await update($, punkteA, alt => stempeln(alt, fn(alt), jetzt))
+  const nachher = await read($, punkteA)
   const alt = new Map(vorher.map(p => [p.id, p]))
   await insVerlauf($, verlaufsEintraege(vorher, nachher, jetzt), jetzt)
   await speichern($)
@@ -132,11 +155,37 @@ async function laden($: EngineInterface) {
   const text = await $.fs.read(`${o.ordner}/offen.md`).then(t => String(t)).catch(() => '')
   const a = text === '' ? null : ablageLesen(text)
   if (a === null) return
-  await update($, punkteA, () => a.punkte)
+  // Was die letzte Sitzung offen liess, fuehrt jetzt diese.
+  await update($, punkteA, () => uebernehmen(a.punkte, sitzung))
   await update($, ueberblickA, () => a.ueberblick)
   await zeigeStatus($)
-  const n = offene(a.punkte).length
+  const n = fragbar(await read($, punkteA), await sicht($)).length
   if (n > 0) $.ui.toast(n === 1 ? '1 offener Punkt aus der letzten Sitzung übernommen · /offen' : `${n} offene Punkte aus der letzten Sitzung übernommen · /offen`)
+}
+
+/** Tagesverlaeufe, die aelter als 30 Tage sind, kommen in die Monatsdatei antworten-JJJJ-MM.md. */
+async function verlaufAufraeumen($: EngineInterface) {
+  const o = await ablageOrt($)
+  if (o === null) return
+  const namen = await $.fs.list(o.ordner).then(l => l.filter(x => x.kind === 'file').map(x => x.name)).catch((): string[] => [])
+  const monate = alteVerlaeufe(namen, await $.clock.now())
+  if (monate.size === 0) return
+  const windows = (await $.env.get('OS')) === 'Windows_NT'
+  for (const [monat, tage] of monate) {
+    const ziel = `${o.ordner}/antworten-${monat}.md`
+    let inhalt = await $.fs.read(ziel).then(t => String(t)).catch(() => monatsKopf(monat))
+    for (const tag of tage) {
+      const text = await $.fs.read(`${o.ordner}/antworten-${tag}.md`).then(t => String(t)).catch(() => null)
+      if (text !== null) inhalt = tagAnhaengen(inhalt, tag, text) ?? inhalt
+    }
+    await $.fs.write(ziel, inhalt)
+    // Erst wenn die Monatsdatei steht; ein Tag, der dort schon steht, kommt nicht doppelt hinein.
+    for (const tag of tage) {
+      const datei = `${o.ordner}/antworten-${tag}.md`
+      await $.process.run(windows ? ['cmd', '/c', 'del', '/q', datei.replace(/\//g, '\\')] : ['rm', '-f', datei])
+        .catch(fehler => $.ui.log(`offene-punkte: ${datei} nicht entfernt (${String(fehler)})`))
+    }
+  }
 }
 
 // ---------------------------------------------------------------- Auswertung
@@ -213,8 +262,8 @@ async function wiederOeffnen($: EngineInterface, id: string) {
   // Die alte Nummer kann inzwischen vergeben sein: bekommt eine neue.
   await aendere($, liste => nummerieren(liste.map(p => {
     if (p.id !== id) return p
-    const { ergebnis: _e, nr: _n, ...rest } = p
-    return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0 }
+    const { ergebnis: _e, nr: _n, ruht: _r, ...rest } = p
+    return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0, sitzung }
   })))
 }
 
@@ -263,7 +312,7 @@ async function senden($: EngineInterface) {
 async function weiter($: EngineInterface) {
   const punkte = await read($, punkteA)
   if (gesammelt(punkte).length === 0) return
-  const rest = offene(punkte).filter(p => !istVeraltet(p) && p.zurueckgestellt === 0)
+  const rest = fragbar(punkte, await sicht($)).filter(p => !istVeraltet(p) && p.zurueckgestellt === 0)
   if (rest.length === 0) return senden($)
   zeitgeber?.cancel()
   zeitgeber = $.clock.after(WARTEZEIT, () => {
@@ -335,7 +384,19 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
     return
   }
   if (wert === SPAETER) {
+    // Erst fragen, wie lange: darunter stehen die Zeiten.
+    await update($, spaeterA, () => punkt.id)
+    return
+  }
+  if (wert === ANS_ENDE) {
+    await update($, spaeterA, () => '')
     await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, zurueckgestellt: p.zurueckgestellt + 1 } : p)))
+    return weiter($)
+  }
+  if (wert.startsWith(RUHE)) {
+    await update($, spaeterA, () => '')
+    const r = ruhe(wert.slice(RUHE.length) as Ruhezeit, await sicht($))
+    await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, ruht: r } : p)))
     return weiter($)
   }
   if (wert === AKTUELL) {
@@ -381,10 +442,29 @@ type Els = ReturnType<EngineInterface['ui']['resolve']>
  * sonst (Handy) ein Knopf je Antwort - dort ohnehin das Bessere zum Antippen.
  * Ist "Eigene Antwort" gewaehlt, steht darunter ein Textfeld.
  */
-function wahl($: EngineInterface, els: Els, surface: string, key: string, punkt: Punkt, eigene: string) {
+const ZEITEN: { wert: string; label: string }[] = [
+  { wert: ANS_ENDE, label: 'Ans Ende' },
+  { wert: `${RUHE}sitzung`, label: 'Nächste Sitzung' },
+  { wert: `${RUHE}morgen`, label: 'Morgen' },
+  { wert: `${RUHE}drei`, label: 'In 3 Tagen' },
+  { wert: `${RUHE}woche`, label: 'Nächste Woche' },
+]
+
+function wahl($: EngineInterface, els: Els, surface: string, key: string, punkt: Punkt, eigene: string, spaeter: string) {
   const optionen = auswahl(punkt)
   const mitTextfeld = surface !== 'mobile' && 'Input' in els
   const { Box, Button, Text } = els
+  if (spaeter === punkt.id) {
+    return (
+      <Box key={`${key}-spaeter`} flexDirection="row" flexWrap="wrap">
+        <Text>Später: </Text>
+        {ZEITEN.map(z => (
+          <Button key={`${key}-${z.wert}`} label={z.label} onPress={() => void waehlen($, punkt, z.wert, false)} />
+        ))}
+        <Button key={`${key}-zurueck`} label="Zurück" onPress={() => void update($, spaeterA, () => '')} />
+      </Box>
+    )
+  }
   const liste = surface !== 'mobile' && 'Select' in els
     ? (
       <els.Select
@@ -445,9 +525,10 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   if (k.art === 'leeren') {
     zeitgeber?.cancel()
     zeitgeber = null
-    await aendere($, () => [])
+    await update($, punkteA, () => [])
     await update($, ueberblickA, () => '')
-    await speichern($)
+    await speichern($, false)
+    await zeigeStatus($)
     return 'Liste der offenen Punkte geleert.'
   }
   const alle = await read($, punkteA)
@@ -465,7 +546,7 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     const wartet = gesammelt(await read($, punkteA)).length
     return `„${punkt.titel}“: ${o.label}${wartet > 0 ? ` – wartet auf die übrigen Fragen (höchstens 30 s, oder /offen senden)` : ''}`
   }
-  const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: SPAETER, aktuell: AKTUELL }[k.tun]
+  const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: ANS_ENDE, aktuell: AKTUELL }[k.tun]
   await waehlen($, punkt, wert, false)
   const was = { erledigt: 'erledigt', weg: 'verworfen', spaeter: 'zurückgestellt', aktuell: 'bleibt offen' }[k.tun]
   return `„${punkt.titel}“: ${was}.`
@@ -480,6 +561,7 @@ export const register: Register = (on, options) => {
   ort = null
   zeitgeber = null
   unterwegs.clear()
+  sitzung = ''
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -491,7 +573,11 @@ export const register: Register = (on, options) => {
       description: 'Fasst die ganze Sitzung zusammen: Ziel, Erledigtes, was du noch tun musst (mit Befehlen), offene Entscheidungen',
     })
     await update($, prueftA, () => false)
+    sitzung = await $.session.id().catch(() => '')
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
+    $.clock.after(0, () => {
+      void verlaufAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht aufgeräumt (${String(fehler)})`))
+    })
     // Punkte aus 0.5.0 haben noch keine Nummer.
     await update($, punkteA, nummerieren)
     await zeigeStatus($)
@@ -509,7 +595,13 @@ export const register: Register = (on, options) => {
       zeitgeber = null
       // Antworten, die noch nicht bei Claude sind, gehoeren zur alten Unterhaltung: wieder fragen.
       $.clock.after(0, () => {
-        void aendere($, l => zuruecknehmen(l)).then(() => laden($)).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
+        void (async () => {
+          // Neue Unterhaltung, neue Sitzungs-ID: die eigenen Punkte gehen mit.
+          const alt = sitzung
+          sitzung = await $.session.id().catch(() => alt)
+          await aendere($, l => uebernehmen(zuruecknehmen(l), sitzung, alt))
+          await laden($)
+        })().catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
       })
     }
     return r
@@ -573,6 +665,7 @@ export const register: Register = (on, options) => {
     await $.ui.open({ id: PANE, title: 'Offene Punkte' })
     const liste = offene(await read($, punkteA))
     const ueberblick = await read($, ueberblickA)
+    const s = await sicht($)
     const o = await ablageOrt($)
     const kopfzeile = ueberblick !== '' ? `Überblick:\n${ueberblick}\n\n` : ''
     const fuss = o !== null ? `\n\nDatei: ${o.ordner}/offen.md · Verlauf: antworten-JJJJ-MM-TT.md` : ''
@@ -581,7 +674,7 @@ export const register: Register = (on, options) => {
     return {
       text: kopfzeile + liste.map((p, i) => {
         const anleitung = (p.anleitung ?? '') !== '' ? `\n${p.anleitung.replace(/^/gm, '   ')}` : ''
-        return `${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
+        return `${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p, s)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
       }).join('\n') + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später${fuss}`,
     }
   })
@@ -595,20 +688,38 @@ export const register: Register = (on, options) => {
     return { text: `Zusammenfassung nicht möglich (${r.reason}).` }
   })
 
-  // Die naechste offene Frage ueber der Eingabe.
+  // Die naechste offene Frage ueber der Eingabe, darueber Warnungen von kontext-anzeige.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (!fragenAnzeigen || e.props.hasSurvey || (await read($, ausgeblendetA))) return next(e)
-    const liste = offene(await read($, punkteA))
+    if (e.props.hasSurvey) return next(e)
+    const [alle, aus, warnungen, s] = await Promise.all([read($, punkteA), read($, warnungenAusA), read($, warnungenA), sicht($)])
+    // Ausgeblendete Warnungen kommen wieder, sobald sie einmal verschwunden waren.
+    const aktuell = new Set(warnungen.map(w => w.schluessel))
+    if (aus.some(x => !aktuell.has(x))) $.clock.after(0, () => void update($, warnungenAusA, l => l.filter(x => aktuell.has(x))))
+    const zeigen = zuZeigen(warnungen, aus)
+    const fragen = fragenAnzeigen && !(await read($, ausgeblendetA))
+    const liste = fragen ? fragbar(alle, s) : []
     const punkt = liste[0]
-    if (punkt === undefined) return next(e)
+    if (punkt === undefined && zeigen.length === 0) return next(e)
 
     const els = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = els
+    const warnZeilen = zeigen.map(w => (
+      <Box key={`warn-${w.schluessel}`} flexDirection="row" flexWrap="wrap">
+        <Text color="red" wrap="wrap">⚠ {w.text} </Text>
+        {mitCompact(w) && <Button key={`compact-${w.schluessel}`} label="/compact" onPress={() => void eintragen($, '/compact ')} />}
+        <Text> </Text>
+        <Button key={`aus-${w.schluessel}`} label="Ausblenden" onPress={() => void update($, warnungenAusA, l => [...l, w.schluessel])} />
+      </Box>
+    ))
+    if (punkt === undefined) return <Box flexDirection="column" paddingX={1}>{warnZeilen}</Box>
+
     const k = kopf(punkt)
-    const wartend = gesammelt(await read($, punkteA)).length
+    const wartend = gesammelt(alle).length
+    const [eigene, spaeter] = await Promise.all([read($, eigeneA), read($, spaeterA)])
 
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={k.farbe} paddingX={1}>
+        {warnZeilen}
         <Text>
           <Text color={k.farbe} bold>{k.zeichen}</Text>
           <Text dimColor>{liste.length > 1 ? ` (1 von ${liste.length})` : ''}{istVeraltet(punkt) ? ' – noch aktuell?' : ''}: </Text>
@@ -623,7 +734,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         <Box flexDirection="row">
-          {wahl($, els, e.surface, `wahl-${punkt.id}`, punkt, await read($, eigeneA))}
+          {wahl($, els, e.surface, `wahl-${punkt.id}`, punkt, eigene, spaeter)}
           <Text> </Text>
           <Button key="alle" label="Alle zeigen" onPress={() => void $.ui.open({ id: PANE, title: 'Offene Punkte' })} />
           <Text> </Text>
@@ -637,7 +748,9 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = els
-    const [punkte, prueft, ueberblick, eigene] = await Promise.all([read($, punkteA), read($, prueftA), read($, ueberblickA), read($, eigeneA)])
+    const [punkte, prueft, ueberblick, eigene, spaeter, s] = await Promise.all([
+      read($, punkteA), read($, prueftA), read($, ueberblickA), read($, eigeneA), read($, spaeterA), sicht($),
+    ])
     const liste = offene(punkte)
     const fertig = punkte.filter(p => p.status !== 'offen').slice(-8).reverse()
 
@@ -656,12 +769,14 @@ export const register: Register = (on, options) => {
             <Text>
               <Text color={kopf(p).farbe} bold>{p.nr ?? i + 1}. {p.art === 'aufgabe' ? 'Zu tun: ' : ''}</Text>
               <Text bold>{p.titel}</Text>
-              <Text dimColor>{vermerk(p)}</Text>
+              <Text dimColor>{vermerk(p, s)}</Text>
             </Text>
             <Text wrap="wrap" dimColor={istVeraltet(p)}>{p.frage}</Text>
             {p.info !== '' && <Text dimColor wrap="wrap">{p.info}</Text>}
             {(p.anleitung ?? '') !== '' && <Markdown key={`anl-${p.id}`} text={p.anleitung} />}
-            {wahl($, els, e.surface, `liste-${p.id}`, p, eigene)}
+            {fremd(p, s.sitzung)
+              ? <Button key={`hier-${p.id}`} label="Hier übernehmen" onPress={() => void aendere($, l => l.map(x => (x.id === p.id ? { ...x, sitzung } : x)))} />
+              : wahl($, els, e.surface, `liste-${p.id}`, p, eigene, spaeter)}
           </Box>
         ))}
         {fertig.length > 0 && <Text dimColor>— zuletzt erledigt —</Text>}

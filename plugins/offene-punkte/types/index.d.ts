@@ -66,7 +66,21 @@ export type Punkt = {
   ergebnis?: string
   /** Beantwortet, aber noch nicht bei Claude. */
   ausstehend?: Ausstehend
+  /**
+   * Die Sitzung, die den Punkt führt. Punkte einer anderen Sitzung im selben Projekt
+   * stehen in /offen, werden aber nicht gefragt. Fehlt bei älteren Fassungen: eigene.
+   */
+  sitzung?: string
+  /** Wann der Punkt zuletzt geschlossen oder wieder geöffnet wurde (für den Abgleich zwischen Sitzungen). */
+  geaendert?: number
+  /** Zurückgelegt: wird bis dahin nicht gefragt (bis: Zeitpunkt; sitzung: bis zur nächsten Sitzung). */
+  ruht?: Ruhe
 }
+
+export type Ruhe = { bis?: number; sitzung?: string }
+
+/** Eine Warnung, die kontext-anzeige in seinem State führt. */
+export type Warnung = { schluessel: string; stufe: 'info' | 'warn'; text: string }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -80,6 +94,14 @@ declare module 'claude-code' {
       ueberblick: string
       /** Punkt, zu dem gerade eine eigene Antwort getippt wird (leer: keiner). */
       eigene: string
+      /** Punkt, zu dem gerade gewählt wird, wie lange er zurückgelegt wird (leer: keiner). */
+      spaeter: string
+      /** Warnungen von kontext-anzeige, die der Nutzer ausgeblendet hat (Schlüssel). */
+      warnungenAus: string[]
+    }
+    /** Gelesen, nicht geschrieben: die aktuellen Hinweise von kontext-anzeige (ab 0.4.0). */
+    'kontext-anzeige': {
+      warnungen: Warnung[]
     }
   }
 }

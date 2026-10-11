@@ -1,4 +1,4 @@
-import type { Art, Option, Punkt, Stufe } from '../types'
+import type { Art, Option, Punkt, Ruhe, Stufe, Warnung } from '../types'
 
 /** Höchstens so viele offene Punkte führt der Mod; ältere fallen hinten weg. */
 export const MAX_PUNKTE = 30
@@ -341,24 +341,130 @@ const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell ·
 
 const RAHMEN: Record<Stufe, string> = { blockiert: 'blockiert', normal: '', angebot: 'Angebot' }
 
-/** Zusatz zum Titel: blockiert, Angebot, veraltet, zurückgestellt. */
-export function vermerk(p: Punkt): string {
-  const teile = [RAHMEN[p.stufe ?? 'normal'], istVeraltet(p) ? 'noch aktuell?' : '', p.zurueckgestellt > 0 ? 'zurückgestellt' : '']
-    .filter(t => t !== '')
+/** Zusatz zum Titel: blockiert, Angebot, veraltet, zurückgestellt, ruhend, aus anderer Sitzung. */
+export function vermerk(p: Punkt, s?: Sicht): string {
+  const teile = [
+    RAHMEN[p.stufe ?? 'normal'], istVeraltet(p) ? 'noch aktuell?' : '', p.zurueckgestellt > 0 ? 'zurückgestellt' : '',
+    s !== undefined ? ruheVermerk(p, s) : '', s !== undefined && fremd(p, s.sitzung) ? 'aus anderer Sitzung' : '',
+  ].filter(t => t !== '')
   return teile.length > 0 ? ` (${teile.join(', ')})` : ''
 }
 
-/** Zeile für die Statusleiste. */
-export function statuszeile(punkte: readonly Punkt[], prueft: boolean): string | undefined {
-  const liste = offene(punkte)
+/** Zeile für die Statusleiste; mit Sicht zählen nur die Punkte, die gefragt werden, der Rest als "weitere". */
+export function statuszeile(punkte: readonly Punkt[], prueft: boolean, s?: Sicht): string | undefined {
+  const liste = s !== undefined ? fragbar(punkte, s) : offene(punkte)
   const n = liste.length
-  if (n === 0) return prueft ? '◇ prüft auf offene Punkte …' : undefined
+  const weitere = offene(punkte).length - n
+  if (n === 0) {
+    if (weitere > 0) return `◇ ${weitere} zurückgelegt${prueft ? ' …' : ''} · /offen`
+    return prueft ? '◇ prüft auf offene Punkte …' : undefined
+  }
   const blockiert = liste.filter(p => p.stufe === 'blockiert').length
   const aufgaben = liste.filter(p => p.art === 'aufgabe').length
   const zusatz = [blockiert > 0 ? `${blockiert} blockiert` : '', aufgaben > 0 ? `${aufgaben} zu tun` : ''].filter(t => t !== '')
 
+  if (weitere > 0) zusatz.push(`${weitere} zurückgelegt`)
+
   return `${blockiert > 0 ? '■' : '◆'} ${n} offen${zusatz.length > 0 ? ` (${zusatz.join(', ')})` : ''}${prueft ? ' …' : ''} · /offen`
 }
+
+// ---------------------------------------------------------------- Sitzungen und Ruhe
+
+/** Wer schaut und wann: entscheidet, welche Punkte gefragt werden. */
+export type Sicht = { sitzung: string; jetzt: number }
+
+/** Ein Punkt, den eine andere Sitzung im selben Projekt führt. */
+export const fremd = (p: Punkt, sitzung: string): boolean =>
+  p.sitzung !== undefined && sitzung !== '' && p.sitzung !== sitzung
+
+/** Zurückgelegt und noch nicht wieder dran. */
+export const ruht = (p: Punkt, s: Sicht): boolean =>
+  p.ruht !== undefined && ((p.ruht.bis !== undefined && s.jetzt < p.ruht.bis) || (p.ruht.sitzung !== undefined && p.ruht.sitzung === s.sitzung))
+
+/** Was über der Eingabe gefragt wird: offen, aus dieser Sitzung, nicht zurückgelegt. */
+export const fragbar = (punkte: readonly Punkt[], s: Sicht): Punkt[] =>
+  offene(punkte).filter(p => !fremd(p, s.sitzung) && !ruht(p, s))
+
+export type Ruhezeit = 'sitzung' | 'morgen' | 'drei' | 'woche'
+
+/** Bis wann ein Punkt ruht: nächste Sitzung, oder Mitternacht morgen, in drei Tagen, nächsten Montag. */
+export function ruhe(zeit: Ruhezeit, s: Sicht): Ruhe {
+  if (zeit === 'sitzung') return { sitzung: s.sitzung }
+  const d = new Date(s.jetzt)
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() + (zeit === 'morgen' ? 1 : zeit === 'drei' ? 3 : (8 - d.getDay()) % 7 || 7))
+  return { bis: d.getTime() }
+}
+
+const WOCHENTAG = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+
+export const tagText = (ms: number): string => {
+  const d = new Date(ms)
+  return `${WOCHENTAG[d.getDay()]} ${zweistellig(d.getDate())}.${zweistellig(d.getMonth() + 1)}.`
+}
+
+/** "ruht bis …" – ohne bekannte Sitzung (in der Datei) auch der Vermerk für die nächste Sitzung. */
+function ruheVermerk(p: Punkt, s: Sicht): string {
+  if (p.ruht === undefined) return ''
+  if (p.ruht.bis !== undefined) return p.ruht.bis > s.jetzt ? `ruht bis ${tagText(p.ruht.bis)}` : ''
+  return s.sitzung === '' || p.ruht.sitzung === s.sitzung ? 'ruht bis zur nächsten Sitzung' : ''
+}
+
+/**
+ * Stempelt, wann ein Punkt geschlossen oder wieder geöffnet wurde - damit beim Abgleich
+ * ein bewusstes Wiederöffnen gegen ein älteres Schließen gewinnt.
+ */
+export function stempeln(vorher: readonly Punkt[], nachher: readonly Punkt[], jetzt: number): Punkt[] {
+  const alt = new Map(vorher.map(p => [p.id, p.status]))
+  return nachher.map(p => {
+    const war = alt.get(p.id)
+    return war !== undefined && (war === 'offen') !== (p.status === 'offen') ? { ...p, geaendert: jetzt } : p
+  })
+}
+
+/**
+ * Führt den Stand aus offen.md - auch von einer anderen Sitzung im selben Projekt geschrieben -
+ * in die eigene Liste. Geschlossen gewinnt, außer der Punkt wurde hier danach wieder geöffnet.
+ * Was nur in der Datei steht, kommt dazu und behält seine Sitzung: steht in /offen, wird
+ * aber nicht gefragt.
+ */
+export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[]): Punkt[] {
+  const dort = new Map(datei.map(p => [p.id, p]))
+  const liste = eigene.map(p => {
+    const d = dort.get(p.id)
+    if (d === undefined || p.status !== 'offen' || d.status === 'offen') return p
+    // Hier wieder geöffnet, nicht vor dem Schließen dort: bleibt offen.
+    if (p.geaendert !== undefined && p.geaendert >= (d.geaendert ?? 0)) return p
+    const { ausstehend: _a, nr: _n, ruht: _r, ergebnis: _e, ...rest } = p
+    return { ...rest, status: d.status, geaendert: d.geaendert, ...(d.ergebnis !== undefined ? { ergebnis: d.ergebnis } : {}) }
+  })
+  const bekannt = new Set(eigene.map(p => p.id))
+  const vergeben = new Set(liste.filter(p => p.status === 'offen').map(p => p.nr))
+  for (const d of datei) {
+    if (bekannt.has(d.id)) continue
+    const { ausstehend: _a, nr, ...rest } = d
+    const p = { ...rest, sitzung: d.sitzung ?? 'unbekannt' }
+    if (d.status === 'offen' && nr !== undefined && !vergeben.has(nr)) {
+      vergeben.add(nr)
+      liste.push({ ...p, nr })
+    } else liste.push(p)
+  }
+
+  return nummerieren(begrenzen(liste))
+}
+
+/** Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. */
+export const uebernehmen = (liste: readonly Punkt[], sitzung: string, nur?: string): Punkt[] =>
+  liste.map(p => (p.status === 'offen' && (nur === undefined || p.sitzung === nur) ? { ...p, sitzung } : p))
+
+// ---------------------------------------------------------------- Warnungen von kontext-anzeige
+
+/** Was über der Eingabe steht: nur Warnungen, ohne die ausgeblendeten. */
+export const zuZeigen = (w: readonly Warnung[], aus: readonly string[]): Warnung[] =>
+  w.filter(x => x.stufe === 'warn' && !aus.includes(x.schluessel))
+
+/** Warnungen zum Kontext bekommen einen Knopf /compact. */
+export const mitCompact = (w: Warnung): boolean => w.schluessel.startsWith('kontext')
 
 // ---------------------------------------------------------------- Dateien
 
@@ -394,7 +500,7 @@ export function ablageText(a: Ablage, jetzt: number): string {
   teile.push(liste.length === 0
     ? '## Offen\n\nNichts offen.'
     : '## Offen\n\n' + liste.map((p, i) => [
-      `### ${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)}`,
+      `### ${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p, { sitzung: '', jetzt })}`,
       p.frage,
       p.info !== '' ? `_${p.info}_` : '',
       (p.abwaegung ?? '') !== '' ? `Abwägung: ${p.abwaegung}` : '',
@@ -445,10 +551,21 @@ export function ablageLesen(inhalt: string): Ablage | null {
       ohneBezug: typeof p.ohneBezug === 'number' ? p.ohneBezug : 0,
       erstellt: typeof p.erstellt === 'number' ? p.erstellt : 0,
       ...(typeof p.ergebnis === 'string' ? { ergebnis: p.ergebnis } : {}),
+      ...(typeof p.sitzung === 'string' ? { sitzung: p.sitzung } : {}),
+      ...(typeof p.geaendert === 'number' ? { geaendert: p.geaendert } : {}),
+      ...(ruheLesen(p.ruht) ?? {}),
     })
   }
 
   return { punkte: nummerieren(begrenzen(punkte)), ueberblick: text(roh.ueberblick, 2000) }
+}
+
+function ruheLesen(x: unknown): { ruht: Ruhe } | undefined {
+  if (typeof x !== 'object' || x === null) return undefined
+  const r = x as Record<string, unknown>
+  if (typeof r.bis === 'number') return { ruht: { bis: r.bis } }
+  if (typeof r.sitzung === 'string') return { ruht: { sitzung: r.sitzung } }
+  return undefined
 }
 
 /** Was sich zwischen zwei Ständen der Liste für den Verlauf getan hat. */
@@ -477,6 +594,32 @@ function verlaufsEintrag(p: Punkt, jetzt: number): string {
 }
 
 export const verlaufKopf = (ms: number): string => `# Antworten auf offene Punkte – ${datum(ms)}\n\nWas entschieden, erledigt oder verworfen wurde, mit den Gründen von damals.\n`
+
+/** Nach so vielen Tagen wandert ein Tagesverlauf in die Monatsdatei. */
+export const VERLAUF_TAGE = 30
+
+/** Die Tagesverläufe, die älter als VERLAUF_TAGE sind, nach Monat (JJJJ-MM → Tage JJJJ-MM-TT, älteste zuerst). */
+export function alteVerlaeufe(namen: readonly string[], jetzt: number): Map<string, string[]> {
+  const grenze = datum(jetzt - VERLAUF_TAGE * 86_400_000)
+  const monate = new Map<string, string[]>()
+  for (const name of [...namen].sort()) {
+    const m = /^antworten-((\d{4}-\d{2})-\d{2})\.md$/.exec(name)
+    if (m === null || m[1]! >= grenze) continue
+    monate.set(m[2]!, [...(monate.get(m[2]!) ?? []), m[1]!])
+  }
+  return monate
+}
+
+export const monatsKopf = (monat: string): string =>
+  `# Antworten auf offene Punkte – ${monat}\n\nWas entschieden, erledigt oder verworfen wurde, mit den Gründen von damals; ein Abschnitt je Tag.\n`
+
+/** Hängt einen Tagesverlauf an die Monatsdatei (Überschriften eine Stufe tiefer); null: der Tag steht schon darin. */
+export function tagAnhaengen(monat: string, tag: string, tagesText: string): string | null {
+  const marke = `## ${tag}\n`
+  if (monat.split('\n').some(z => `${z}\n` === marke)) return null
+  const rumpf = tagesText.replace(/^# [^\n]*\n+(Was entschieden[^\n]*\n)?/, '').replace(/^## /gm, '### ').trim()
+  return `${monat.trimEnd()}\n\n${marke}\n${rumpf}\n`
+}
 
 /** Ordnername für die Ablage außerhalb eines Git-Repos: der Projektpfad, lesbar. */
 export const ordnerName = (wurzel: string): string =>
