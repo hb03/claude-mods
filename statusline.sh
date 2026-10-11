@@ -64,6 +64,13 @@ fi
 # alte Dateien des Mods gelegentlich wegräumen
 [ $((RANDOM % 200)) -eq 0 ] && find "$HOME/.claude/kontext-anzeige" -name '*.json' -mtime +3 -delete 2>/dev/null
 
+# ---------- Eingabe für die Web-App ablegen (claude-web zeigt sie in der Arbeitsansicht) ----------
+stand_dir="$HOME/.claude/statusline-stand"
+if [ -n "$session_id" ] && mkdir -p "$stand_dir" 2>/dev/null; then
+    printf '%s' "$input" > "$stand_dir/$session_id.json.tmp" && mv -f "$stand_dir/$session_id.json.tmp" "$stand_dir/$session_id.json"
+    [ $((RANDOM % 200)) -eq 0 ] && find "$stand_dir" -name '*.json' -mtime +3 -delete 2>/dev/null
+fi
+
 # ---------- Git ----------
 repo=$(basename "$project_dir")
 branch=""
