@@ -10,7 +10,7 @@
     {
       "name": "kontext-anzeige",
       "source": "./plugins/kontext-anzeige",
-      "description": "Mod: Hinweise zu Kontext, Prompt-Cache, Auto-Compact und Limits; liefert Cache-Werte an ~/.claude/statusline.sh, optional eigene Zeile über der Eingabe; /kontext für Details.",
+      "description": "Mod: Hinweise zu Kontext, Prompt-Cache, Auto-Compact und Limits; liefert die Werte an statusline.sh und die Warnungen an offene-punkte; /kontext für Details, /kontext test zur Probe.",
       "version": "0.4.0",
       "category": "mod"
     },
@@ -19,6 +19,13 @@
       "source": "./plugins/offene-punkte",
       "description": "Mod: erkennt nach jeder Antwort offene Punkte (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; führt einen Überblick über die Sitzung. /offen, /zusammenfassung. Auswertung über Haiku.",
       "version": "0.6.0",
+      "category": "mod"
+    },
+    {
+      "name": "push-wache",
+      "source": "./plugins/push-wache",
+      "description": "Mod: prüft vor jedem git push in ein öffentliches Repo die neuen Commits auf eigene Muster, fremde Autor-Mails und Geheimnisse und fragt bei einem Fund nach.",
+      "version": "0.1.0",
       "category": "mod"
     }
   ]

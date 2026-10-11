@@ -1,0 +1,26 @@
+{
+  "name": "push-wache",
+  "version": "0.1.0",
+  "description": "Prüft vor jedem git push, den Claude in ein öffentliches Repo macht, die neuen Commits auf eigene Muster (Namen, Pfade), fremde Autor-Mails und Geheimnisse. Bei einem Fund fragt sie mit den Fundstellen nach: abbrechen oder trotzdem pushen.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "muster": {
+      "type": "string",
+      "title": "Muster (regulärer Ausdruck)",
+      "description": "Was nicht in ein öffentliches Repo gehört, z. B. vorname|servername|/home/ich/ – Groß-/Kleinschreibung egal; leer: keine Musterprüfung",
+      "default": ""
+    },
+    "mails": {
+      "type": "string",
+      "title": "Erlaubte Autor-Mails (regulärer Ausdruck)",
+      "description": "Autor und Committer jedes neuen Commits müssen passen; leer: keine Prüfung",
+      "default": "@users\\.noreply\\.github\\.com$"
+    },
+    "oeffentlich": {
+      "type": "string",
+      "title": "Öffentliche Hosts",
+      "description": "Nur Pushes zu diesen Hosts werden geprüft, durch Komma getrennt",
+      "default": "github.com, gitlab.com, bitbucket.org, codeberg.org"
+    }
+  }
+}
