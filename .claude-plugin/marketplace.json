@@ -27,6 +27,13 @@
       "description": "Mod: prüft vor jedem git push in ein öffentliches Repo die neuen Commits auf eigene Muster, fremde Autor-Mails und Geheimnisse und fragt bei einem Fund nach.",
       "version": "0.1.0",
       "category": "mod"
+    },
+    {
+      "name": "commit-erinnerung",
+      "source": "./plugins/commit-erinnerung",
+      "description": "Mod: nach einem grünen Testlauf mit uncommitteten Änderungen bekommt Claude still den Hinweis, den Arbeitsschritt zu committen.",
+      "version": "0.1.0",
+      "category": "mod"
     }
   ]
 }

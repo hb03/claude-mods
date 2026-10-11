@@ -1,0 +1,13 @@
+{
+  "name": "commit-erinnerung",
+  "version": "0.1.0",
+  "description": "Läuft ein Testbefehl grün durch und liegen danach uncommittete Änderungen im Repo, bekommt Claude still einen Hinweis, den Arbeitsschritt zu committen. Keine Dauerabfrage, kein Git-Hook.",
+  "userConfig": {
+    "testbefehle": {
+      "type": "string",
+      "title": "Weitere Testbefehle (regulärer Ausdruck)",
+      "description": "Zusätzlich zu phpunit, pest, npm/pnpm/yarn/bun test, pytest, vitest, jest, cargo/go/make test, claude plugin test u. a.; leer: nur diese",
+      "default": ""
+    }
+  }
+}
