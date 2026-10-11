@@ -147,7 +147,8 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
   const bezug = new Set([...a.erwaehnt, ...aenderungen.keys()])
 
   const liste = punkte.map(p => {
-    if (p.status !== 'offen') return p
+    // Schon beantwortet (nur noch nicht bei Claude): gilt als geschlossen.
+    if (p.status !== 'offen' || p.ausstehend !== undefined) return p
     if (erledigt.has(p.id)) return { ...p, status: 'erledigt' as const, ergebnis: 'laut Gespräch erledigt' }
     const { id: _id, ...felder } = aenderungen.get(p.id) ?? { id: '' }
     return { ...p, ...felder, ohneBezug: bezug.has(p.id) ? 0 : (p.ohneBezug ?? 0) + 1 }
@@ -161,7 +162,60 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     liste.push({ id: neueId(), ...n, status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt })
   }
 
-  return begrenzen(liste)
+  return nummerieren(begrenzen(liste))
+}
+
+/**
+ * Gibt offenen Punkten ohne Nummer die kleinste freie. Vergebene Nummern bleiben, solange
+ * der Punkt offen ist - "/offen 1 a" und danach "/offen 2 b" meinen die Punkte von vorher.
+ */
+export function nummerieren(liste: readonly Punkt[]): Punkt[] {
+  const vergeben = new Set(liste.filter(p => p.status === 'offen' && p.nr !== undefined).map(p => p.nr))
+  let n = 0
+  const naechste = () => {
+    do n++
+    while (vergeben.has(n))
+    return n
+  }
+  return liste.map(p => (p.status === 'offen' && p.nr === undefined ? { ...p, nr: naechste() } : p))
+}
+
+/** Die beantworteten, noch nicht gesendeten Punkte (wo: nur diese), in der Reihenfolge der Antworten. */
+export function ausstehende(punkte: readonly Punkt[], wo?: 'sammlung' | 'eingabe'): Punkt[] {
+  return punkte
+    .filter(p => p.status === 'offen' && p.ausstehend !== undefined && (wo === undefined || p.ausstehend.wo === wo))
+    .sort((a, b) => (a.ausstehend?.reihe ?? 0) - (b.ausstehend?.reihe ?? 0))
+}
+
+/** Die Antworten sind bei Claude: die Punkte schließen sich (ergebnisse: abweichendes Ergebnis je id). */
+export function abschliessen(liste: readonly Punkt[], ids: ReadonlySet<string>, ergebnisse: ReadonlyMap<string, string> = new Map()): Punkt[] {
+  return liste.map(p => {
+    if (!ids.has(p.id) || p.ausstehend === undefined) return p
+    const { ausstehend: a, ...rest } = p
+    return { ...rest, status: a.status, ergebnis: ergebnisse.get(p.id) ?? a.ergebnis }
+  })
+}
+
+/** Die Antworten kamen nicht an: die Punkte werden wieder gefragt (ids fehlt: alle). */
+export function zuruecknehmen(liste: readonly Punkt[], ids?: ReadonlySet<string>): Punkt[] {
+  return liste.map(p => {
+    if (p.ausstehend === undefined || (ids !== undefined && !ids.has(p.id))) return p
+    const { ausstehend: _a, ...rest } = p
+    return rest
+  })
+}
+
+/**
+ * Was der Nutzer in der abgeschickten Nachricht zu einem Punkt geschrieben hat: der Text
+ * nach „Titel“: bis zur nächsten Antwort. null: der Punkt steht nicht (mehr) darin.
+ */
+export function antwortIn(nachricht: string, titel: string): string | null {
+  const marke = `„${titel}“:`
+  const start = nachricht.indexOf(marke)
+  if (start < 0) return null
+  const rest = nachricht.slice(start + marke.length)
+  const ende = rest.search(/\n(- „|Zum offenen Punkt „)/)
+  return (ende < 0 ? rest : rest.slice(0, ende)).trim()
 }
 
 /** Offene vorne behalten, Erledigtes als Erstes weglassen, wenn es zu viele werden. */
@@ -183,7 +237,7 @@ const RANG: Record<Stufe, number> = { blockiert: 0, normal: 1, angebot: 2 }
  */
 export function offene(punkte: readonly Punkt[]): Punkt[] {
   return punkte
-    .filter(p => p.status === 'offen')
+    .filter(p => p.status === 'offen' && p.ausstehend === undefined)
     .sort((a, b) =>
       Number(istVeraltet(a)) - Number(istVeraltet(b)) ||
       a.zurueckgestellt - b.zurueckgestellt ||
@@ -332,14 +386,15 @@ const optionenText = (p: Punkt) => p.optionen
  * nächste Sitzung in einem HTML-Kommentar.
  */
 export function ablageText(a: Ablage, jetzt: number): string {
-  const liste = offene(a.punkte)
+  // Auch was beantwortet, aber noch nicht bei Claude ist: es kommt in der nächsten Sitzung wieder.
+  const liste = offene(zuruecknehmen(a.punkte))
   const fertig = a.punkte.filter(p => p.status !== 'offen').slice(-8).reverse()
   const teile = [`# Offene Punkte\n\nStand: ${datum(jetzt)} ${uhrzeit(jetzt)} · wird von offene-punkte geschrieben, Änderungen hier gehen verloren.`]
   if (a.ueberblick !== '') teile.push(`## Überblick\n\n${a.ueberblick}`)
   teile.push(liste.length === 0
     ? '## Offen\n\nNichts offen.'
     : '## Offen\n\n' + liste.map((p, i) => [
-      `### ${i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)}`,
+      `### ${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)}`,
       p.frage,
       p.info !== '' ? `_${p.info}_` : '',
       (p.abwaegung ?? '') !== '' ? `Abwägung: ${p.abwaegung}` : '',
@@ -376,6 +431,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
     const status = p.status === 'erledigt' || p.status === 'verworfen' ? p.status : 'offen'
     punkte.push({
       id: p.id,
+      ...(typeof p.nr === 'number' && status === 'offen' ? { nr: p.nr } : {}),
       titel: p.titel,
       frage: p.frage,
       info: text(p.info, 300),
@@ -392,7 +448,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
     })
   }
 
-  return { punkte: begrenzen(punkte), ueberblick: text(roh.ueberblick, 2000) }
+  return { punkte: nummerieren(begrenzen(punkte)), ueberblick: text(roh.ueberblick, 2000) }
 }
 
 /** Was sich zwischen zwei Ständen der Liste für den Verlauf getan hat. */

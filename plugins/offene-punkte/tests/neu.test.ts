@@ -4,10 +4,10 @@ import type { TestBody } from 'claude-code/testing'
 
 import type { Auswertung } from '../hooks/logik'
 import {
-  VERALTET_NACH, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies, offene,
-  ordnerName, statuszeile, verlaufsEintraege, zusammenfuehren,
+  VERALTET_NACH, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies,
+  nummerieren, offene, ordnerName, statuszeile, verlaufsEintraege, zuruecknehmen, zusammenfuehren,
 } from '../hooks/logik'
-import type { Punkt } from '../types'
+import type { Ausstehend, Punkt } from '../types'
 
 const punkt = (id: string, extra: Partial<Punkt> = {}): Punkt => ({
   id, titel: id, frage: `${id}?`, info: '', art: 'entscheidung', anleitung: '',
@@ -132,12 +132,14 @@ const HAIKU = JSON.stringify({
   erledigt: [],
 })
 
-function grundlage(on: On, dateien: Map<string, string>) {
+function grundlage(on: On, dateien: Map<string, string>, box = { text: '' }) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
   on('ui.toast', () => ({ value: {} }) as never)
   on('ui.open', () => ({ value: { isPlaced: true } }) as never)
   on('command.register', () => ({ value: {} }) as never)
+  // Die Eingabe, wie sie gerade steht (ein Aufruf ohne eigenes Ereignis in den Typen).
+  ;(on as unknown as (name: string, hook: () => unknown) => void)('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('session.root', () => ({ value: '/projekt' }) as never)
   on('env.get', () => ({ value: '/home/x' }) as never)
@@ -188,6 +190,8 @@ test('Punkte landen in offen.md, Antworten mit Abwägung im Tagesverlauf, die Au
   expect(dateien.get('/projekt/offene-punkte/offen.md')).toContain('### 1. Ausrollen')
   await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
   await ui.unmount()
+  // Erst wenn die Antwort bei Claude ist, schließt sich der Punkt.
+  await uhr.settle()
 
   const verlauf = [...dateien.entries()].find(([k]) => /antworten-\d{4}-\d\d-\d\d\.md$/.test(k))?.[1] ?? ''
   expect(verlauf).toContain('Ausrollen – entschieden')
@@ -315,7 +319,10 @@ test('zwei Fragen einer Runde: die erste Antwort wartet, beide gehen als eine Na
   expect(await ui.find({ type: 'Button', text: 'Jetzt senden' })).toBeDefined()
   await ui.unmount()
 
-  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  // Die Nummern bleiben: "Ausrollen" ist weiter Nummer 2; Nummer 1 ist schon beantwortet.
+  const r2 = await $.command.run({ command: 'offen', args: '1 a' } as never)
+  expect(String((r2 as { text?: string }).text)).toContain('schon beantwortet')
+  await $.command.run({ command: 'offen', args: '2 a' } as never)
   await uhr.settle()
   expect(gesendet).toEqual(['Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'])
 })
@@ -332,7 +339,7 @@ test('ohne weitere Wahl geht das Gesammelte nach 30 Sekunden los; "Schon erledig
 test('eine Antwort ohne Text schließt die Runde und schickt das Gesammelte sofort', async ($, on) => {
   const { uhr, gesendet } = await zweiFragen($, on)
   await $.command.run({ command: 'offen', args: '1 a' } as never)
-  await $.command.run({ command: 'offen', args: '1 b' } as never)
+  await $.command.run({ command: 'offen', args: '2 b' } as never)
   await uhr.settle()
   expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
 })
@@ -342,4 +349,135 @@ test('schreibt der Nutzer selbst, steht das Gesammelte vor seiner Nachricht', as
   await $.command.run({ command: 'offen', args: '1 a' } as never)
   await $.prompt.submit({ text: 'Und mach danach die Tests.', origin: { kind: 'composer' } } as never)
   expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.\n\nUnd mach danach die Tests.'])
+})
+
+// ---------------------------------------------------------------- 0.5.1: Antworten erst bei Claude schließen
+
+const JA: Ausstehend = { status: 'erledigt', ergebnis: 'Ja – „Ja.“', text: 'Ja.', wo: 'sammlung', reihe: 1 }
+
+describe('Ausstehende Antworten', () => {
+  test('feste Nummern: neue bekommen die kleinste freie, vergebene bleiben', async () => {
+    const l = nummerieren([punkt('a', { nr: 2 }), punkt('b'), punkt('c', { status: 'erledigt', nr: 1 }), punkt('d')])
+    expect(l.map(p => [p.id, p.nr])).toEqual([['a', 2], ['b', 1], ['c', 1], ['d', 3]])
+  })
+
+  test('ausstehend: nicht mehr gefragt, schließt sich erst beim Abschließen; in offen.md wieder offen', async () => {
+    const l = [punkt('a', { nr: 1, ausstehend: JA }), punkt('b', { nr: 2 })]
+    expect(offene(l).map(p => p.id)).toEqual(['b'])
+    const zu = abschliessen(l, new Set(['a']))[0]!
+    expect([zu.status, zu.ergebnis, zu.ausstehend]).toEqual(['erledigt', 'Ja – „Ja.“', undefined])
+    expect(zuruecknehmen(l)[0]!.ausstehend).toBeUndefined()
+    const text = ablageText({ punkte: l, ueberblick: '' }, 1)
+    expect(text).toContain('### 1. a')
+    const a = ablageLesen(text)?.punkte[0]
+    expect([a?.status, a?.nr, a?.ausstehend]).toEqual(['offen', 1, undefined])
+  })
+
+  test('Haiku lässt beantwortete Punkte in Ruhe und legt sie nicht neu an', async () => {
+    const a = lies(JSON.stringify({ neu: [{ titel: 'a', art: 'entscheidung', frage: '?', optionen: [{ label: 'x', antwort: 'y' }] }], erledigt: ['a'] }))!
+    const l = zusammenfuehren([punkt('a', { ausstehend: JA })], a, 2, () => 'n')
+    expect(l.map(p => [p.id, p.status, p.ausstehend?.text])).toEqual([['a', 'offen', 'Ja.']])
+  })
+
+  test('was in der Nachricht zu einem Punkt steht', async () => {
+    const n = 'Zu den offenen Punkten:\n- „A“: Nimm A.\n- „B“: weil x\nzweite Zeile\nZum offenen Punkt „C“: '
+    expect(antwortIn(n, 'A')).toBe('Nimm A.')
+    expect(antwortIn(n, 'B')).toBe('weil x\nzweite Zeile')
+    expect(antwortIn(n, 'C')).toBe('')
+    expect(antwortIn(n, 'D')).toBeNull()
+  })
+})
+
+test('nach /clear wird, was noch nicht bei Claude war, wieder gefragt', async ($, on) => {
+  on('session.end', () => ({ sessionId: 's1' }) as never)
+  const { uhr, gesendet } = await zweiFragen($, on)
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await $.session.end({ reason: 'clear' } as never)
+  await uhr.settle()
+  await uhr.advance(30_000)
+  expect(gesendet).toEqual([])
+  const r = await $.command.run({ command: 'offen', args: '' } as never)
+  expect(String((r as { text?: string }).text)).toContain('1. Variante')
+})
+
+test('Fragen aus zwei Auswertungen gehen zusammen; Haiku erfährt danach, was beantwortet wurde', async ($, on) => {
+  const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+  grundlage(on, new Map())
+  const frage = (titel: string, antwort: string) =>
+    JSON.stringify({ neu: [{ titel, art: 'entscheidung', frage: `${titel}?`, optionen: [{ label: 'Ja', antwort }] }], erledigt: [] })
+  const antworten = [frage('Erste', 'Ja, die erste.'), frage('Zweite', 'Ja, die zweite.'), JSON.stringify({ neu: [], erledigt: [] })]
+  const prompts: string[] = []
+  on('model.complete', (_, e) => {
+    prompts.push(String((e as { prompt?: unknown }).prompt))
+    return { value: { isAnswered: true, text: antworten.shift() } } as never
+  })
+  const gesendet: string[] = []
+  on('prompt.submit', (_, e) => {
+    gesendet.push(e.text)
+    return { text: e.text } as never
+  })
+  for (const turnId of ['t1', 't2']) {
+    await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId } as never)
+    await uhr.settle()
+  }
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await uhr.settle()
+  expect(gesendet).toEqual([])
+  await $.command.run({ command: 'offen', args: '2 a' } as never)
+  await uhr.settle()
+  const nachricht = 'Zu den offenen Punkten:\n- „Erste“: Ja, die erste.\n- „Zweite“: Ja, die zweite.'
+  expect(gesendet).toEqual([nachricht])
+
+  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't3' } as never)
+  await uhr.settle()
+  expect(prompts[2]).toContain('„Zweite“: Ja, die zweite.')
+})
+
+test('Ergänzen: Gesammeltes und spätere Antworten kommen in die Eingabe; Herausgenommenes wird wieder gefragt', async ($, on) => {
+  const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+  const box = { text: 'Übrigens: ' }
+  grundlage(on, new Map(), box)
+  on('model.complete', () => ({
+    value: {
+      isAnswered: true,
+      text: JSON.stringify({
+        neu: [
+          { titel: 'Variante', art: 'entscheidung', frage: 'A oder B?', optionen: [{ label: 'A', antwort: 'Nimm A.' }] },
+          { titel: 'Grund', art: 'entscheidung', frage: 'Warum?', optionen: [{ label: 'Erklären', antwort: 'Weil:' }] },
+          { titel: 'Ausrollen', art: 'entscheidung', frage: 'Ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja, gleich.' }] },
+        ],
+        erledigt: [],
+      }),
+    },
+  }) as never)
+  on('prompt.fill', (_, e) => {
+    box.text = e.mode === 'append' ? box.text + e.text : e.text
+    return { isFilled: true } as never
+  })
+  const gesendet: string[] = []
+  on('prompt.submit', (_, e) => {
+    gesendet.push(e.text)
+    return { text: e.text } as never
+  })
+  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+
+  await $.command.run({ command: 'offen', args: '1 a' } as never)
+  await $.command.run({ command: 'offen', args: '2 a' } as never)
+  await $.command.run({ command: 'offen', args: '3 a' } as never)
+  await uhr.advance(60_000)
+  expect(gesendet).toEqual([])
+  // Angefangener Text bleibt stehen, die Antworten kommen darunter.
+  expect(box.text).toBe('Übrigens: \nZu den offenen Punkten:\n- „Variante“: Nimm A.\n- „Grund“: Weil: \nZum offenen Punkt „Ausrollen“: Ja, gleich. ')
+
+  // Der Nutzer ergänzt den Grund und nimmt das Ausrollen wieder heraus.
+  await $.prompt.submit({ text: 'Zu den offenen Punkten:\n- „Variante“: Nimm A.\n- „Grund“: Weil: billiger.', origin: { kind: 'composer' } } as never)
+  await uhr.settle()
+  const r = await $.command.run({ command: 'offen', args: '' } as never)
+  const liste = String((r as { text?: string }).text)
+  expect(liste).toContain('3. Ausrollen')
+  expect(liste).not.toContain('Variante')
+  const pane = await $.ui.mount({ plugin: 'offene-punkte', surface: 'terminal', component: 'Pane', requestId: 'offene-punkte', props: {} } as never)
+  expect(await pane.find({ type: 'Text', text: /Grund: Erklären – „Weil: billiger.“/ })).toBeDefined()
+  await pane.unmount()
 })

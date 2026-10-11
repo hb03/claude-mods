@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Punkt } from '../types'
+import type { Ausstehend, Punkt } from '../types'
 import {
-  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, ablageLesen, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig, ausnahmeErgaenzen,
-  befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, offene, ordnerName, sammelText, statuszeile,
-  verlaufKopf, verlaufsEintraege, vermerk, zusammenfuehren,
+  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, auswerten as auswertenNoetig,
+  ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, istVeraltet, kommando, lies, nummerieren, offene, ordnerName,
+  sammelText, statuszeile, verlaufKopf, verlaufsEintraege, vermerk, zuruecknehmen, zusammenfuehren,
 } from './logik'
 import type { Teil } from './logik'
 
@@ -25,7 +25,6 @@ const prueftA = atom({ plugin: 'offene-punkte', key: 'prueft' } as const, false)
 const ausgeblendetA = atom({ plugin: 'offene-punkte', key: 'ausgeblendet' } as const, false)
 const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const, '')
 const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
-const wartendA = atom({ plugin: 'offene-punkte', key: 'wartend' } as const, 0)
 
 // Feste Wahlmoeglichkeiten unter jeder Frage.
 // Steht vorgewaehlt in der Auswahl, damit dort nicht "none" erscheint; waehlt nichts.
@@ -49,13 +48,13 @@ let letzteEingabe = ''
 let warteschlange: string[] = []
 let wartendeEingabe = ''
 let laeuft = false
-// Eigene Antwort, die (ohne Textfeld) in der Eingabe vorbereitet wurde: schliesst den Punkt beim Abschicken.
-let vorbereitet: { id: string; anfang: string } | null = null
-// Antworten einer Runde (Fragen aus derselben Auswertung) gehen gesammelt an Claude: wenn
-// alle beantwortet sind oder WARTEZEIT nach der letzten Wahl. Leere Texte zaehlen als
-// beantwortet, schicken aber nichts (Spaeter, Schon erledigt, Nicht relevant).
-let sammlung: { runde: number; beantwortet: Set<string>; teile: Teil[] } | null = null
+// Gewaehlte Antworten stehen als "ausstehend" am Punkt (im State, uebersteht ein Neuladen) und
+// gehen gesammelt an Claude: wenn keine aktuelle Frage mehr offen ist oder WARTEZEIT nach der
+// letzten Wahl. Erst dann schliesst sich der Punkt. Spaeter, Schon erledigt und Nicht relevant
+// brauchen keine Nachricht und wirken sofort.
 let zeitgeber: Timer | null = null
+// Gerade abgeschickt, Antwort der Engine steht noch aus: nicht ein zweites Mal senden.
+const unterwegs = new Set<string>()
 // Wo die Dateien liegen; einmal je Sitzung ermittelt.
 let ort: Promise<{ ordner: string } | null> | null = null
 
@@ -172,7 +171,15 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
     }
     const jetzt = await $.clock.now()
     let zaehler = 0
-    const neueId = () => `p${jetzt.toString(36)}${(zaehler++).toString(36)}`
+    // Eindeutig, auch wenn zwei Auswertungen in dieselbe Millisekunde fallen.
+    const vergeben = new Set((await read($, punkteA)).map(p => p.id))
+    const neueId = () => {
+      let id: string
+      do id = `p${jetzt.toString(36)}${(zaehler++).toString(36)}`
+      while (vergeben.has(id))
+      vergeben.add(id)
+      return id
+    }
     if (a.ueberblick !== '') await update($, ueberblickA, () => a.ueberblick)
     const geschlossen = await aendere($, alt => zusammenfuehren(alt, a, jetzt, neueId))
 
@@ -203,72 +210,112 @@ async function setzeStatus($: EngineInterface, id: string, status: Punkt['status
 }
 
 async function wiederOeffnen($: EngineInterface, id: string) {
-  await aendere($, liste => liste.map(p => {
+  // Die alte Nummer kann inzwischen vergeben sein: bekommt eine neue.
+  await aendere($, liste => nummerieren(liste.map(p => {
     if (p.id !== id) return p
-    const { ergebnis: _e, ...rest } = p
+    const { ergebnis: _e, nr: _n, ...rest } = p
     return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0 }
-  }))
+  })))
 }
 
-/** Das Gesammelte als eine Nachricht an Claude; ohne Text nur aufraeumen. */
+const teileVon = (punkte: readonly Punkt[]): Teil[] => punkte.map(p => ({ titel: p.titel, text: p.ausstehend?.text ?? '' }))
+
+const naechsteReihe = (liste: readonly Punkt[]) => Math.max(0, ...liste.map(p => p.ausstehend?.reihe ?? 0)) + 1
+
+/** Was gesammelt auf das Senden wartet. */
+const gesammelt = (punkte: readonly Punkt[]) => ausstehende(punkte, 'sammlung').filter(p => !unterwegs.has(p.id))
+
+/** Eine Antwort, wie sie gewaehlt wurde: Status beim Schliessen, Label fuers Ergebnis, Text fuer Claude. */
+type Wahl = { status: Ausstehend['status']; label: string; text: string }
+
+const ergebnis = (w: Wahl, text: string) => (text !== '' ? `${w.label} – „${text}“` : w.label)
+
+/** Das Gesammelte als eine Nachricht an Claude; die Punkte schliessen sich, sobald sie angekommen ist. */
 async function senden($: EngineInterface) {
   zeitgeber?.cancel()
   zeitgeber = null
-  const s = sammlung
-  sammlung = null
-  await update($, wartendA, () => 0)
-  if (s === null || s.teile.length === 0) return
+  const liste = gesammelt(await read($, punkteA))
+  if (liste.length === 0) return
+  const ids = new Set(liste.map(p => p.id))
+  for (const id of ids) unterwegs.add(id)
+  const text = sammelText(teileVon(liste))
+  // Haiku soll bei der naechsten Auswertung wissen, was der Nutzer gerade beantwortet hat.
+  letzteEingabe = text
   // Als eigene Nachricht des Nutzers; laeuft gerade eine Antwort, kommt sie danach. Ausserhalb
   // des aufrufenden Hooks: aus /offen (command.run) heraus lehnt die Engine ein submit ab.
-  const text = sammelText(s.teile)
   $.clock.after(0, () => {
-    void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: nicht gesendet (${String(fehler)})`))
+    void $.prompt.submit({ text, asUser: true })
+      .then(r => aendere($, l => ('drop' in r && r.drop !== undefined ? zuruecknehmen(l, ids) : abschliessen(l, ids))))
+      .catch(async fehler => {
+        $.ui.log(`offene-punkte: nicht gesendet (${String(fehler)})`)
+        await aendere($, l => zuruecknehmen(l, ids))
+      })
+      .finally(() => {
+        for (const id of ids) unterwegs.delete(id)
+      })
   })
 }
 
-/** Nimmt das Gesammelte heraus, ohne es zu senden (es geht mit etwas anderem zusammen). */
-async function herausnehmen($: EngineInterface): Promise<Teil[]> {
-  zeitgeber?.cancel()
-  zeitgeber = null
-  const teile = sammlung?.teile ?? []
-  sammlung = null
-  await update($, wartendA, () => 0)
-  return teile
-}
-
 /**
- * Ein Punkt ist beantwortet (text leer: ohne Nachricht). Sind damit alle Fragen seiner
- * Runde beantwortet, geht das Gesammelte los, sonst nach WARTEZEIT ohne weitere Wahl.
+ * Nach einer Wahl: ist keine aktuelle Frage mehr offen (zurueckgestellte und veraltete zaehlen
+ * nicht), geht das Gesammelte los, sonst WARTEZEIT nach dieser Wahl.
  */
-async function beantwortet($: EngineInterface, punkt: Punkt, text: string) {
-  if (sammlung !== null && sammlung.runde !== punkt.erstellt) await senden($)
-  const s = (sammlung ??= { runde: punkt.erstellt, beantwortet: new Set(), teile: [] })
-  s.beantwortet.add(punkt.id)
-  if (text !== '') s.teile.push({ titel: punkt.titel, text })
-  const rest = offene(await read($, punkteA)).filter(p => p.erstellt === s.runde && !s.beantwortet.has(p.id))
+async function weiter($: EngineInterface) {
+  const punkte = await read($, punkteA)
+  if (gesammelt(punkte).length === 0) return
+  const rest = offene(punkte).filter(p => !istVeraltet(p) && p.zurueckgestellt === 0)
   if (rest.length === 0) return senden($)
   zeitgeber?.cancel()
   zeitgeber = $.clock.after(WARTEZEIT, () => {
     void senden($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
   })
-  await update($, wartendA, () => s.teile.length)
 }
 
-/** In die Eingabe statt abschicken: das Gesammelte plus diese Antwort, zum Ergaenzen. */
-async function vorbereiten($: EngineInterface, punkt: Punkt, text: string): Promise<string> {
-  const teile = [...(await herausnehmen($)), { titel: punkt.titel, text }]
-  const eingabe = sammelText(teile).trimEnd() + ' '
-  await $.prompt.fill({ text: eingabe, mode: 'replace' })
-  return eingabe
+/** Text in die Eingabe: eine leere bekommt ihn ganz, an Angefangenes kommt er in einer neuen Zeile. */
+async function eintragen($: EngineInterface, text: string) {
+  const box = await $.prompt.read()
+  if (box.text.trim() === '') await $.prompt.fill({ text, mode: 'replace' })
+  else await $.prompt.fill({ text: `${box.text.endsWith('\n') ? '' : '\n'}${text}`, mode: 'append' })
 }
 
-/** Die eigene Antwort abschicken: Punkt schliessen, Antwort an Claude. */
+/**
+ * Antwort in die Eingabe statt abschicken: der Nutzer ergaenzt und schickt selbst ab. Was
+ * gesammelt wartet, kommt mit; der Punkt schliesst sich mit der Nachricht.
+ */
+async function inEingabe($: EngineInterface, punkt: Punkt, w: Wahl) {
+  zeitgeber?.cancel()
+  zeitgeber = null
+  const mit = gesammelt(await read($, punkteA))
+  const ids = new Set(mit.map(p => p.id))
+  await aendere($, liste => {
+    const reihe = naechsteReihe(liste)
+    return liste.map(p => {
+      if (p.id === punkt.id) return { ...p, ausstehend: { status: w.status, ergebnis: w.label, text: w.text, wo: 'eingabe' as const, reihe } }
+      if (ids.has(p.id) && p.ausstehend !== undefined) return { ...p, ausstehend: { ...p.ausstehend, wo: 'eingabe' as const } }
+      return p
+    })
+  })
+  await eintragen($, sammelText([...teileVon(mit), { titel: punkt.titel, text: w.text }]).trimEnd() + ' ')
+}
+
+/** Eine fertige Antwort: gesammelt - oder in die Eingabe, wenn dort schon Antworten auf das Abschicken warten. */
+async function antworten($: EngineInterface, punkt: Punkt, w: Wahl) {
+  if (ausstehende(await read($, punkteA), 'eingabe').length > 0) return inEingabe($, punkt, w)
+  await aendere($, liste => {
+    const reihe = naechsteReihe(liste)
+    return liste.map(p => (p.id === punkt.id
+      ? { ...p, ausstehend: { status: w.status, ergebnis: ergebnis(w, w.text), text: w.text, wo: 'sammlung' as const, reihe } }
+      : p))
+  })
+  await weiter($)
+}
+
+/** Die eigene Antwort aus dem Textfeld. */
 async function eigeneAntwort($: EngineInterface, punkt: Punkt, text: string) {
   await update($, eigeneA, () => '')
   const t = text.trim()
   if (t === '') return
-  await setzeStatus($, punkt.id, 'erledigt', `eigene Antwort: ${t}`)
-  await beantwortet($, punkt, t)
+  await antworten($, punkt, { status: 'erledigt', label: 'eigene Antwort', text: t })
 }
 
 /** Eine Wahl in der Frage eines Punkts ausfuehren. */
@@ -279,18 +326,17 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
       return
     }
     // Kein Textfeld (Handy): in der Eingabe vorbereiten; beim Abschicken schliesst sich der Punkt.
-    vorbereitet = { id: punkt.id, anfang: await vorbereiten($, punkt, '') }
-    return
+    return inEingabe($, punkt, { status: 'erledigt', label: 'eigene Antwort', text: '' })
   }
   if (wert.startsWith(BEFEHL)) {
     // Nur vorbereitet: der Nutzer sieht die Bitte und schickt sie selbst ab; Claude fuehrt aus. Der Punkt bleibt offen.
     const befehl = befehle(punkt.anleitung)[Number(wert.slice(BEFEHL.length))]
-    if (befehl !== undefined) await $.prompt.fill({ text: ausfuehrBitte(punkt.titel, befehl), mode: 'replace' })
+    if (befehl !== undefined) await eintragen($, ausfuehrBitte(punkt.titel, befehl))
     return
   }
   if (wert === SPAETER) {
     await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, zurueckgestellt: p.zurueckgestellt + 1 } : p)))
-    return beantwortet($, punkt, '')
+    return weiter($)
   }
   if (wert === AKTUELL) {
     await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, ohneBezug: 0 } : p)))
@@ -300,18 +346,20 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
     await (wert === ERLEDIGT
       ? setzeStatus($, punkt.id, 'erledigt', 'als erledigt markiert')
       : setzeStatus($, punkt.id, 'verworfen', 'nicht relevant'))
-    return beantwortet($, punkt, '')
+    return weiter($)
   }
 
   const option = punkt.optionen[Number(wert)]
   if (option === undefined) return
-  await setzeStatus($, punkt.id, 'erledigt', option.antwort !== '' ? `${option.label} – „${option.antwort}“` : option.label)
-  if (brauchtErgaenzung(option.antwort)) {
-    // Braucht noch eigenen Text: mit dem Gesammelten in die Eingabe, ergaenzen und selbst abschicken.
-    await vorbereiten($, punkt, option.antwort)
-    return
+  if (option.antwort === '') {
+    // Nichts fuer Claude: gleich schliessen.
+    await setzeStatus($, punkt.id, 'erledigt', option.label)
+    return weiter($)
   }
-  await beantwortet($, punkt, option.antwort)
+  const w: Wahl = { status: 'erledigt', label: option.label, text: option.antwort }
+  // Braucht noch eigenen Text: in die Eingabe, ergaenzen und selbst abschicken.
+  if (brauchtErgaenzung(option.antwort)) return inEingabe($, punkt, w)
+  await antworten($, punkt, w)
 }
 
 function auswahl(punkt: Punkt) {
@@ -390,23 +438,31 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   if (k.art === 'liste') return null
   if (k.art === 'fehler') return k.text
   if (k.art === 'senden') {
-    const n = await read($, wartendA)
+    const n = gesammelt(await read($, punkteA)).length
     await senden($)
     return n > 0 ? 'Gesammelte Antworten gesendet.' : 'Es wartet nichts.'
   }
   if (k.art === 'leeren') {
+    zeitgeber?.cancel()
+    zeitgeber = null
     await aendere($, () => [])
     await update($, ueberblickA, () => '')
     await speichern($)
     return 'Liste der offenen Punkte geleert.'
   }
-  const punkt = offene(await read($, punkteA))[k.nummer - 1]
-  if (punkt === undefined) return `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
+  const alle = await read($, punkteA)
+  const punkt = offene(alle).find(p => p.nr === k.nummer)
+  if (punkt === undefined) {
+    const beantwortet = ausstehende(alle).find(p => p.nr === k.nummer)
+    return beantwortet !== undefined
+      ? `„${beantwortet.titel}“ ist schon beantwortet und geht mit den übrigen Antworten an Claude.`
+      : `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
+  }
   if (k.tun === 'option') {
     const o = punkt.optionen[k.option ?? -1]
     if (o === undefined) return `„${punkt.titel}“ hat keine Antwort ${String.fromCharCode(97 + (k.option ?? 0))}) – ${optionenText(punkt)}`
     await waehlen($, punkt, String(k.option), false)
-    const wartet = await read($, wartendA)
+    const wartet = gesammelt(await read($, punkteA)).length
     return `„${punkt.titel}“: ${o.label}${wartet > 0 ? ` – wartet auf die übrigen Fragen (höchstens 30 s, oder /offen senden)` : ''}`
   }
   const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: SPAETER, aktuell: AKTUELL }[k.tun]
@@ -421,10 +477,9 @@ export const register: Register = (on, options) => {
   fragenAnzeigen = options.fragenAnzeigen !== false
   warteschlange = []
   laeuft = false
-  vorbereitet = null
   ort = null
-  sammlung = null
   zeitgeber = null
+  unterwegs.clear()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -437,7 +492,11 @@ export const register: Register = (on, options) => {
     })
     await update($, prueftA, () => false)
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
+    // Punkte aus 0.5.0 haben noch keine Nummer.
+    await update($, punkteA, nummerieren)
     await zeigeStatus($)
+    // Nach einem Neuladen des Plugins: was gesammelt wartete, wartet weiter (der Zeitgeber ist neu).
+    await weiter($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     return next(e)
   })
 
@@ -446,8 +505,11 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.reason === 'clear') {
       ort = null
+      zeitgeber?.cancel()
+      zeitgeber = null
+      // Antworten, die noch nicht bei Claude sind, gehoeren zur alten Unterhaltung: wieder fragen.
       $.clock.after(0, () => {
-        void laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
+        void aendere($, l => zuruecknehmen(l)).then(() => laden($)).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
       })
     }
     return r
@@ -455,28 +517,39 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     // Nur was der Nutzer selbst schreibt - eine Antwort aus der Auswahl kennt Haiku schon.
-    if (e.origin.kind === 'composer') {
-      // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
-      const teile = sammlung !== null && sammlung.teile.length > 0 ? await herausnehmen($).catch(() => []) : []
-      if (teile.length > 0) {
-        const text = `${sammelText(teile)}\n\n${e.text}`
-        letzteEingabe = text
-        return next({ ...e, text })
+    if (e.origin.kind !== 'composer') return next(e)
+    const punkte = await read($, punkteA).catch((): Punkt[] => [])
+    const mit = gesammelt(punkte)
+    const eingabe = ausstehende(punkte, 'eingabe')
+    // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
+    const text = mit.length > 0 ? `${sammelText(teileVon(mit))}\n\n${e.text}` : e.text
+    letzteEingabe = text
+    if (mit.length + eingabe.length === 0) return next(e)
+
+    zeitgeber?.cancel()
+    zeitgeber = null
+    const ids = new Set(mit.map(p => p.id))
+    const weg = new Set<string>()
+    const ergebnisse = new Map<string, string>()
+    // Antworten aus der Eingabe: was noch in der Nachricht steht, ist beantwortet; was der Nutzer
+    // herausgenommen hat, wird wieder gefragt.
+    for (const p of eingabe) {
+      const t = antwortIn(e.text, p.titel)
+      if (t === null) {
+        weg.add(p.id)
+        continue
       }
-      letzteEingabe = e.text
-      const v = vorbereitet
-      if (v !== null && e.text.startsWith(v.anfang)) {
-        vorbereitet = null
-        const rest = e.text.slice(v.anfang.length).trim()
-        // Nicht hier warten: das Schliessen schreibt Dateien, die Nachricht soll sofort raus.
-        if (rest !== '') {
-          $.clock.after(0, () => {
-            void setzeStatus($, v.id, 'erledigt', `eigene Antwort: ${rest}`).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
-          })
-        }
-      }
+      ids.add(p.id)
+      ergebnisse.set(p.id, t !== '' ? `${p.ausstehend?.ergebnis} – „${t}“` : String(p.ausstehend?.ergebnis))
     }
-    return next(e)
+    const r = await next(text === e.text ? e : { ...e, text })
+    const angekommen = !('drop' in r && r.drop !== undefined)
+    // Nicht hier warten: das Schliessen schreibt Dateien.
+    $.clock.after(0, () => {
+      void aendere($, l => (angekommen ? zuruecknehmen(abschliessen(l, ids, ergebnisse), weg) : zuruecknehmen(l)))
+        .catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+    })
+    return r
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -508,7 +581,7 @@ export const register: Register = (on, options) => {
     return {
       text: kopfzeile + liste.map((p, i) => {
         const anleitung = (p.anleitung ?? '') !== '' ? `\n${p.anleitung.replace(/^/gm, '   ')}` : ''
-        return `${i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
+        return `${p.nr ?? i + 1}. ${p.art === 'aufgabe' ? 'Zu tun: ' : ''}${p.titel}${vermerk(p)} – ${p.frage}${p.info !== '' ? `\n   ${p.info}` : ''}${anleitung}\n   ${optionenText(p)}`
       }).join('\n') + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später${fuss}`,
     }
   })
@@ -532,7 +605,7 @@ export const register: Register = (on, options) => {
     const els = $.ui.resolve(e)
     const { Box, Button, Markdown, Text } = els
     const k = kopf(punkt)
-    const wartend = await read($, wartendA)
+    const wartend = gesammelt(await read($, punkteA)).length
 
     return (
       <Box flexDirection="column" borderStyle="round" borderColor={k.farbe} paddingX={1}>
@@ -581,7 +654,7 @@ export const register: Register = (on, options) => {
         {liste.map((p, i) => (
           <Box key={p.id} flexDirection="column" borderStyle="round" borderColor={kopf(p).farbe} borderDimColor={istVeraltet(p)} paddingX={1}>
             <Text>
-              <Text color={kopf(p).farbe} bold>{i + 1}. {p.art === 'aufgabe' ? 'Zu tun: ' : ''}</Text>
+              <Text color={kopf(p).farbe} bold>{p.nr ?? i + 1}. {p.art === 'aufgabe' ? 'Zu tun: ' : ''}</Text>
               <Text bold>{p.titel}</Text>
               <Text dimColor>{vermerk(p)}</Text>
             </Text>

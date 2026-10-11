@@ -17,9 +17,28 @@ export type Art = 'entscheidung' | 'aufgabe'
 /** Blockiert: ohne den Nutzer geht es nicht weiter. Angebot: "könnte ich auch noch …". */
 export type Stufe = 'blockiert' | 'normal' | 'angebot'
 
+/**
+ * Eine gewählte Antwort, die noch nicht bei Claude ist. Der Punkt bleibt so lange
+ * offen (nur nicht mehr gefragt) und schließt sich erst, wenn die Nachricht raus ist.
+ */
+export type Ausstehend = {
+  /** So schließt sich der Punkt, wenn die Antwort angekommen ist. */
+  status: 'erledigt' | 'verworfen'
+  /** Fürs Ergebnis; bei "eingabe" kommt, was der Nutzer ergänzt hat, dahinter. */
+  ergebnis: string
+  /** Was Claude bekommt. */
+  text: string
+  /** sammlung: geht gesammelt los; eingabe: steht in der Eingabe, geht mit der Nachricht des Nutzers. */
+  wo: 'sammlung' | 'eingabe'
+  /** Reihenfolge der Antworten. */
+  reihe: number
+}
+
 /** Ein offener Punkt, wie Haiku ihn aus einer Antwort gelesen hat. */
 export type Punkt = {
   id: string
+  /** Feste Nummer für /offen, solange der Punkt offen ist (fehlt bei älteren Fassungen). */
+  nr?: number
   /** Wenige Worte, für Liste und Statuszeile. */
   titel: string
   /** Die Frage an den Nutzer, ein Satz. */
@@ -45,6 +64,8 @@ export type Punkt = {
   erstellt: number
   /** Gewählte Antwort oder wodurch erledigt. */
   ergebnis?: string
+  /** Beantwortet, aber noch nicht bei Claude. */
+  ausstehend?: Ausstehend
 }
 
 declare module 'claude-code' {
@@ -59,8 +80,6 @@ declare module 'claude-code' {
       ueberblick: string
       /** Punkt, zu dem gerade eine eigene Antwort getippt wird (leer: keiner). */
       eigene: string
-      /** So viele Antworten warten darauf, gesammelt an Claude zu gehen. */
-      wartend: number
     }
   }
 }
