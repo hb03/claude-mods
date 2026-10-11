@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Punkt, Warnung } from '../types'
 import {
-  abgleichen, ablageLesen, ablageText, alteVerlaeufe, fragbar, monatsKopf, ruhe, statuszeile, stempeln, tagAnhaengen, uebernehmen, zuZeigen,
+  abgleichen, ablageLesen, ablageText, alteVerlaeufe, fragbar, monatsKopf, ruhe, statuszeile, stempeln, tagText, tagAnhaengen, uebernehmen, zuZeigen,
 } from '../hooks/logik'
 
 const punkt = (id: string, extra: Partial<Punkt> = {}): Punkt => ({
@@ -59,8 +59,20 @@ describe('Abgleich zwischen Sitzungen', () => {
       punkt('letzte', { ruht: { sitzung: 'X' } }),
     ]
     expect(fragbar(liste, s).map(p => p.id)).toEqual(['eigen', 'alt', 'vorbei', 'letzte'])
-    expect(statuszeile(liste, false, s)).toBe('◆ 4 offen (3 zurückgelegt) · /offen')
+    expect(statuszeile(liste, false, s)).toBe(`◆ 4 offen (3 zurückgelegt – nächster ${tagText(SONNTAG + 1)}) · /offen`)
     expect(statuszeile([punkt('fremd', { sitzung: 'B' })], false, s)).toBe('◇ 1 zurückgelegt · /offen')
+  })
+
+  test('die Statuszeile nennt, wann der nächste zurückgelegte Punkt wieder dran ist', async () => {
+    const s = { sitzung: 'A', jetzt: SONNTAG }
+    const montag = ruhe('woche', s).bis ?? 0
+    const morgen = ruhe('morgen', s).bis ?? 0
+    expect(statuszeile([punkt('m', { ruht: { bis: montag } })], false, s)).toBe(`◇ 1 zurückgelegt bis ${tagText(montag)} · /offen`)
+    expect(statuszeile([punkt('m', { ruht: { bis: montag } }), punkt('t', { ruht: { bis: morgen } }), punkt('x')], false, s))
+      .toBe(`◆ 1 offen (2 zurückgelegt – nächster ${tagText(morgen)}) · /offen`)
+    expect(statuszeile([punkt('a', { ruht: { sitzung: 'A' } }), punkt('b', { ruht: { sitzung: 'A' } })], false, s))
+      .toBe('◇ 2 zurückgelegt bis zur nächsten Sitzung · /offen')
+    expect(statuszeile([punkt('v', { ruht: { bis: SONNTAG - 1 } })], false, s)).toBe('◆ 1 offen · /offen')
   })
 
   test('Ruhezeiten: Mitternacht morgen, in drei Tagen, nächster Montag; nächste Sitzung', async () => {
@@ -202,6 +214,27 @@ test('Später → Morgen: der Punkt ruht bis Mitternacht und ist danach wieder d
   const danach = await $.ui.mount(band('mobile') as never)
   expect(await danach.find({ type: 'Text', text: 'Ausrollen' })).toBeDefined()
   await danach.unmount()
+})
+
+test('/offen <Nr> aktuell holt einen zurückgelegten Punkt sofort zurück', async ($, on) => {
+  const uhr = mock.clock(on, { now: SONNTAG })
+  const dateien = new Map([[OFFEN, ablageText({ punkte: [
+    punkt('a', { nr: 1, titel: 'Ausrollen', ruht: { bis: SONNTAG + 7 * 86_400_000 } }),
+    punkt('b', { nr: 2, titel: 'Aufräumen', zurueckgestellt: 2 }),
+  ], ueberblick: '' }, 1)]])
+  grundlage(on, dateien)
+  await $.session.start({ cwd: '/projekt', surface: 'mobile', isInteractive: true } as never)
+  await uhr.settle()
+
+  const r = await $.command.run({ command: 'offen', args: '1 aktuell' } as never)
+  expect(String((r as { text?: string }).text)).toBe('„Ausrollen“: wieder aktuell.')
+  await $.command.run({ command: 'offen', args: '2 aktuell' } as never)
+  await uhr.settle()
+  expect(dateien.get(OFFEN)).not.toContain('ruht bis')
+  expect(dateien.get(OFFEN)).not.toContain('zurückgestellt')
+  const ui = await $.ui.mount(band('mobile') as never)
+  expect(await ui.find({ type: 'Text', text: 'Ausrollen' })).toBeDefined()
+  await ui.unmount()
 })
 
 test('Warnungen von kontext-anzeige stehen über der Eingabe, mit /compact und Ausblenden', async ($, on) => {

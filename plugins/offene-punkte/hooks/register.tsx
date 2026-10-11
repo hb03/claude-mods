@@ -409,7 +409,12 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
     return weiter($)
   }
   if (wert === AKTUELL) {
-    await aendere($, liste => liste.map(p => (p.id === punkt.id ? { ...p, ohneBezug: 0 } : p)))
+    // Wieder aktuell: auch Zurückstellen und Ruhe aufheben, sonst bliebe ein zurückgelegter Punkt liegen.
+    await aendere($, liste => liste.map(p => {
+      if (p.id !== punkt.id) return p
+      const { ruht: _r, ...rest } = p
+      return { ...rest, ohneBezug: 0, zurueckgestellt: 0 }
+    }))
     return
   }
   if (wert === ERLEDIGT || wert === VERWERFEN) {
@@ -557,7 +562,7 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   }
   const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: ANS_ENDE, aktuell: AKTUELL }[k.tun]
   await waehlen($, punkt, wert, false)
-  const was = { erledigt: 'erledigt', weg: 'verworfen', spaeter: 'zurückgestellt', aktuell: 'bleibt offen' }[k.tun]
+  const was = { erledigt: 'erledigt', weg: 'verworfen', spaeter: 'zurückgestellt', aktuell: 'wieder aktuell' }[k.tun]
   return `„${punkt.titel}“: ${was}.`
 }
 

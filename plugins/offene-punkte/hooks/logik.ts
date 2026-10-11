@@ -367,15 +367,18 @@ export function statuszeile(punkte: readonly Punkt[], prueft: boolean, s?: Sicht
   const liste = s !== undefined ? fragbar(punkte, s) : offene(punkte)
   const n = liste.length
   const weitere = offene(punkte).length - n
+  // "1 zurückgelegt bis Mo 12.10." oder "6 zurückgelegt – nächster Mo 12.10."
+  const ende = s !== undefined ? ruheEnde(punkte, s) : ''
+  const zurueck = `${weitere} zurückgelegt${ende === '' ? '' : weitere === 1 || !/\d/.test(ende) ? ` bis ${ende}` : ` – nächster ${ende}`}`
   if (n === 0) {
-    if (weitere > 0) return `◇ ${weitere} zurückgelegt${prueft ? ' …' : ''} · /offen`
+    if (weitere > 0) return `◇ ${zurueck}${prueft ? ' …' : ''} · /offen`
     return prueft ? '◇ prüft auf offene Punkte …' : undefined
   }
   const blockiert = liste.filter(p => p.stufe === 'blockiert').length
   const aufgaben = liste.filter(p => p.art === 'aufgabe').length
   const zusatz = [blockiert > 0 ? `${blockiert} blockiert` : '', aufgaben > 0 ? `${aufgaben} zu tun` : ''].filter(t => t !== '')
 
-  if (weitere > 0) zusatz.push(`${weitere} zurückgelegt`)
+  if (weitere > 0) zusatz.push(zurueck)
 
   return `${blockiert > 0 ? '■' : '◆'} ${n} offen${zusatz.length > 0 ? ` (${zusatz.join(', ')})` : ''}${prueft ? ' …' : ''} · /offen`
 }
@@ -413,6 +416,15 @@ const WOCHENTAG = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
 export const tagText = (ms: number): string => {
   const d = new Date(ms)
   return `${WOCHENTAG[d.getDay()]} ${zweistellig(d.getDate())}.${zweistellig(d.getMonth() + 1)}.`
+}
+
+/** Für die Statuszeile: wann der nächste ruhende Punkt wieder gefragt wird ("Mo 12.10.",
+ *  "zur nächsten Sitzung"), leer, wenn nichts ruht. */
+export function ruheEnde(punkte: readonly Punkt[], s: Sicht): string {
+  const ruhend = offene(punkte).filter(p => ruht(p, s))
+  if (ruhend.length === 0) return ''
+  const termine = ruhend.flatMap(p => (p.ruht?.bis !== undefined && p.ruht.bis > s.jetzt ? [p.ruht.bis] : []))
+  return termine.length > 0 ? tagText(Math.min(...termine)) : 'zur nächsten Sitzung'
 }
 
 /** "ruht bis …" – ohne bekannte Sitzung (in der Datei) auch der Vermerk für die nächste Sitzung. */
