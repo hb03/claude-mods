@@ -37,7 +37,10 @@ export type Ausstehend = {
 /** Ein offener Punkt, wie Haiku ihn aus einer Antwort gelesen hat. */
 export type Punkt = {
   id: string
-  /** Feste Nummer für /offen, solange der Punkt offen ist (fehlt bei älteren Fassungen). */
+  /**
+   * Feste Nummer, je Projekt fortlaufend und nie wiederverwendet; bleibt auch nach dem
+   * Schließen (Verlauf, Rückbezug). Fehlt bei älteren Fassungen.
+   */
   nr?: number
   /** Wenige Worte, für Liste und Statuszeile. */
   titel: string
@@ -75,6 +78,8 @@ export type Punkt = {
   geaendert?: number
   /** Zurückgelegt: wird bis dahin nicht gefragt (bis: Zeitpunkt; sitzung: bis zur nächsten Sitzung). */
   ruht?: Ruhe
+  /** Vom Nutzer selbst angelegt (/offen neu): die Auswertung schließt, ändert und altert ihn nicht. */
+  vonNutzer?: boolean
 }
 
 export type Ruhe = { bis?: number; sitzung?: string }
@@ -86,6 +91,8 @@ declare module 'claude-code' {
   interface PluginState {
     'offene-punkte': {
       punkte: Punkt[]
+      /** Höchste je vergebene Nummer im Projekt; neue Punkte zählen von hier weiter. */
+      hoechsteNr: number
       /** Läuft gerade eine Auswertung? */
       prueft: boolean
       /** Fragen über der Eingabe für diese Sitzung ausgeblendet. */

@@ -5,7 +5,7 @@ import type { Ausstehend, Punkt, Warnung } from '../types'
 import {
   AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
-  kommando, lies, mitCompact, monatsKopf, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
+  hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
 } from './logik'
 import type { Ruhezeit, Sicht, Teil } from './logik'
@@ -22,6 +22,7 @@ import type { Ruhezeit, Sicht, Teil } from './logik'
 
 const PANE = 'offene-punkte'
 const punkteA = atom({ plugin: 'offene-punkte', key: 'punkte' } as const, [])
+const hoechsteA = atom({ plugin: 'offene-punkte', key: 'hoechsteNr' } as const, 0)
 const prueftA = atom({ plugin: 'offene-punkte', key: 'prueft' } as const, false)
 const ausgeblendetA = atom({ plugin: 'offene-punkte', key: 'ausgeblendet' } as const, false)
 const ueberblickA = atom({ plugin: 'offene-punkte', key: 'ueberblick' } as const, '')
@@ -82,6 +83,17 @@ async function zeigeStatus($: EngineInterface) {
   $.ui.status(statuszeile(punkte, prueft, s))
 }
 
+/** Ab hier zaehlen neue Nummern: hoechste je vergebene, mindestens die hoechste in der Liste. */
+async function nummernAb($: EngineInterface): Promise<number> {
+  const [h, punkte] = await Promise.all([read($, hoechsteA), read($, punkteA)])
+  return Math.max(h, hoechsteNr(punkte))
+}
+
+/** Den Zaehler nachziehen (nie zurueck). */
+async function zaehlerHeben($: EngineInterface, n: number) {
+  await update($, hoechsteA, h => Math.max(h, n))
+}
+
 // ---------------------------------------------------------------- Dateien
 
 /**
@@ -122,10 +134,15 @@ async function speichern($: EngineInterface, abgleich = true) {
   if (abgleich) {
     const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
     const dort = text === '' ? null : ablageLesen(text)
-    if (dort !== null) await update($, punkteA, alt => abgleichen(alt, dort.punkte))
+    if (dort !== null) {
+      await zaehlerHeben($, dort.hoechsteNr ?? 0)
+      const ab = await nummernAb($)
+      await update($, punkteA, alt => abgleichen(alt, dort.punkte, ab))
+    }
   }
-  const [punkte, ueberblick, jetzt] = await Promise.all([read($, punkteA), read($, ueberblickA), $.clock.now()])
-  await $.fs.write(datei, ablageText({ punkte, ueberblick }, jetzt))
+  await zaehlerHeben($, hoechsteNr(await read($, punkteA)))
+  const [punkte, ueberblick, h, jetzt] = await Promise.all([read($, punkteA), read($, ueberblickA), read($, hoechsteA), $.clock.now()])
+  await $.fs.write(datei, ablageText({ punkte, ueberblick, hoechsteNr: h }, jetzt))
     .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`))
 }
 
@@ -161,12 +178,27 @@ async function laden($: EngineInterface) {
   const text = await $.fs.read(`${o.ordner}/offen.md`).then(t => String(t)).catch(() => '')
   const a = text === '' ? null : ablageLesen(text)
   if (a === null) return
+  await zaehlerHeben($, a.hoechsteNr ?? 0)
   // Was die letzte Sitzung offen liess, fuehrt jetzt diese.
   await update($, punkteA, () => uebernehmen(a.punkte, sitzung))
   await update($, ueberblickA, () => a.ueberblick)
   await zeigeStatus($)
   const n = fragbar(await read($, punkteA), await sicht($)).length
   if (n > 0) $.ui.toast(n === 1 ? '1 offener Punkt aus der letzten Sitzung übernommen · /offen' : `${n} offene Punkte aus der letzten Sitzung übernommen · /offen`)
+}
+
+/**
+ * Zum Start: der Zaehler kennt auch Nummern, die nur noch im Verlauf stehen (offen.md
+ * geloescht oder aelter) - eine Nummer wird nie zweimal vergeben.
+ */
+async function zaehlerLaden($: EngineInterface) {
+  const o = await ablageOrt($)
+  if (o === null) return
+  const namen = await $.fs.list(o.ordner).then(l => l.filter(x => x.kind === 'file').map(x => x.name)).catch((): string[] => [])
+  for (const name of namen.filter(n => /^antworten-[\d-]+\.md$/.test(n))) {
+    const text = await $.fs.read(`${o.ordner}/${name}`).then(t => String(t)).catch(() => '')
+    await zaehlerHeben($, hoechsteImVerlauf(text))
+  }
 }
 
 /** Tagesverlaeufe, die aelter als 30 Tage sind, kommen in die Monatsdatei antworten-JJJJ-MM.md. */
@@ -236,7 +268,8 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
       return id
     }
     if (a.ueberblick !== '') await update($, ueberblickA, () => a.ueberblick)
-    const geschlossen = await aendere($, alt => zusammenfuehren(alt, a, jetzt, neueId))
+    const ab = await nummernAb($)
+    const geschlossen = await aendere($, alt => zusammenfuehren(alt, a, jetzt, neueId, ab))
 
     const bekannt = new Set(vorher.map(p => p.id))
     const neu = offene(await read($, punkteA)).filter(p => !bekannt.has(p.id)).length
@@ -265,12 +298,13 @@ async function setzeStatus($: EngineInterface, id: string, status: Punkt['status
 }
 
 async function wiederOeffnen($: EngineInterface, id: string) {
-  // Die alte Nummer kann inzwischen vergeben sein: bekommt eine neue.
+  // Die Nummer bleibt (sie wird nie neu vergeben); Punkte aus aelteren Fassungen bekommen eine.
+  const ab = await nummernAb($)
   await aendere($, liste => nummerieren(liste.map(p => {
     if (p.id !== id) return p
-    const { ergebnis: _e, nr: _n, ruht: _r, ...rest } = p
+    const { ergebnis: _e, ruht: _r, ...rest } = p
     return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0, sitzung }
-  })))
+  }), ab))
 }
 
 /** Ruht ein Punkt, wird er gleich wieder gefragt. */
@@ -611,6 +645,17 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     await zeigeStatus($)
     return 'Liste der offenen Punkte geleert.'
   }
+  if (k.art === 'neu') {
+    const [alle, jetzt, ab] = await Promise.all([read($, punkteA), $.clock.now(), nummernAb($)])
+    const ids = new Set(alle.map(p => p.id))
+    let i = 0
+    let id: string
+    do id = `n${jetzt.toString(36)}${(i++).toString(36)}`
+    while (ids.has(id))
+    await aendere($, liste => nummerieren([...liste, notiz(k.text, id, jetzt, sitzung)], ab))
+    const neu = (await read($, punkteA)).find(p => p.id === id)
+    return neu === undefined ? 'Punkt nicht angelegt.' : `Punkt ${neu.nr ?? '?'} angelegt: „${neu.titel}“`
+  }
   const alle = await read($, punkteA)
   const punkt = offene(alle).find(p => p.nr === k.nummer)
   if (punkt === undefined) {
@@ -629,6 +674,12 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
       return `„${punkt.titel}“: ${o.label} – alle Fragen beantwortet, geht in ${ab.sekunden} s an Claude${ab.inEingabe ? ' (steht in der Eingabe, Enter schickt sofort)' : ' (oder /offen senden)'}`
     }
     return `„${punkt.titel}“: ${o.label}${wartet > 0 ? ` – wartet auf die übrigen Fragen (höchstens 30 s, oder /offen senden)` : ''}`
+  }
+  if (k.tun === 'spaeter' && k.bis !== undefined) {
+    await waehlen($, punkt, `${RUHE}${k.bis}`, false)
+    const p = (await read($, punkteA)).find(x => x.id === punkt.id)
+    const wie = p !== undefined ? ruheVermerk(p, { sitzung: '', jetzt: await $.clock.now() }) : ''
+    return `„${punkt.titel}“: ${wie || 'zurückgelegt.'}`
   }
   const wert = { erledigt: ERLEDIGT, weg: VERWERFEN, spaeter: ANS_ENDE, aktuell: AKTUELL }[k.tun]
   await waehlen($, punkt, wert, false)
@@ -650,7 +701,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später, /offen 2 a wählt eine Antwort, /offen leeren räumt die Liste',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen neu <Text> legt einen Punkt an, /offen leeren räumt die Liste',
     })
     await $.command.register({
       name: 'zusammenfassung',
@@ -662,8 +713,10 @@ export const register: Register = (on, options) => {
     $.clock.after(0, () => {
       void verlaufAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht aufgeräumt (${String(fehler)})`))
     })
+    await zaehlerLaden($).catch(fehler => $.ui.log(`offene-punkte: Zaehler nicht gelesen (${String(fehler)})`))
     // Punkte aus 0.5.0 haben noch keine Nummer.
-    await update($, punkteA, nummerieren)
+    const ab = await nummernAb($)
+    await update($, punkteA, l => nummerieren(l, ab))
     await zeigeStatus($)
     // Nach einem Neuladen des Plugins: was gesammelt wartete, wartet weiter (der Zeitgeber ist neu).
     await weiter($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
@@ -783,7 +836,7 @@ export const register: Register = (on, options) => {
     const ruhendText = ruhend.length === 0 ? '' : `\n\nZurückgelegt (${ruhend.length}):\n` + ruhend
       .map((p, i) => `${p.nr ?? i + 1}. ${p.titel} – ${ruheVermerk(p, s)}`).join('\n')
     return {
-      text: kopfzeile + aktivText + ruhendText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen neu <Text>${fuss}`,
     }
   })
 

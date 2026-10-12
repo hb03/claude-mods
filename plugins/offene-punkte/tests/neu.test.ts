@@ -359,9 +359,11 @@ test('schreibt der Nutzer selbst, steht das Gesammelte vor seiner Nachricht', as
 const JA: Ausstehend = { status: 'erledigt', ergebnis: 'Ja – „Ja.“', text: 'Ja.', wo: 'sammlung', reihe: 1 }
 
 describe('Ausstehende Antworten', () => {
-  test('feste Nummern: neue bekommen die kleinste freie, vergebene bleiben', async () => {
+  test('feste Nummern: fortlaufend über der höchsten, vergebene bleiben, auch geschlossene', async () => {
     const l = nummerieren([punkt('a', { nr: 2 }), punkt('b'), punkt('c', { status: 'erledigt', nr: 1 }), punkt('d')])
-    expect(l.map(p => [p.id, p.nr])).toEqual([['a', 2], ['b', 1], ['c', 1], ['d', 3]])
+    expect(l.map(p => [p.id, p.nr])).toEqual([['a', 2], ['b', 3], ['c', 1], ['d', 4]])
+    // ab: höchste je vergebene, auch wenn der Punkt nicht mehr in der Liste steht
+    expect(nummerieren([punkt('e')], 7)[0]?.nr).toBe(8)
   })
 
   test('ausstehend: nicht mehr gefragt, schließt sich erst beim Abschließen; in offen.md wieder offen', async () => {

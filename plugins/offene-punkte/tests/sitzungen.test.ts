@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Punkt, Warnung } from '../types'
 import {
+  hoechsteImVerlauf, kommando, notiz, nummerieren, verlaufsEintraege, zusammenfuehren,
   abgleichen, ablageLesen, ablageText, alteVerlaeufe, fragbar, monatsKopf, ruhe, statuszeile, stempeln, tagText, tagAnhaengen, uebernehmen, zuZeigen,
 } from '../hooks/logik'
 
@@ -25,9 +26,9 @@ describe('Abgleich zwischen Sitzungen', () => {
     ]
     const l = abgleichen(eigene, datei)
     expect(l.find(p => p.id === 'a')).toMatchObject({ status: 'erledigt', ergebnis: 'dort entschieden', sitzung: 'A' })
-    expect(l.find(p => p.id === 'a')?.nr).toBeUndefined()
-    // Nummer 2 ist hier vergeben: c bekommt die kleinste freie.
-    expect(l.find(p => p.id === 'c')).toMatchObject({ status: 'offen', sitzung: 'B', nr: 1 })
+    // Geschlossen behält seine Nummer; Nummer 2 ist hier offen vergeben: c bekommt die nächste.
+    expect(l.find(p => p.id === 'a')?.nr).toBe(1)
+    expect(l.find(p => p.id === 'c')).toMatchObject({ status: 'offen', sitzung: 'B', nr: 3 })
     expect(l.find(p => p.id === 'b')?.nr).toBe(2)
     expect(l.find(p => p.id === 'd')?.status).toBe('verworfen')
   })
@@ -283,4 +284,67 @@ test('alte Tagesverläufe wandern beim Start in die Monatsdatei', async ($, on) 
 
   expect(dateien.get('/projekt/offene-punkte/antworten-2026-08.md')).toContain('## 2026-08-01\n\n### 10:00 · X – entschieden')
   expect(befehle).toEqual([['rm', '-f', '/projekt/offene-punkte/antworten-2026-08-01.md']])
+})
+
+// ---------------------------------------------------------------- 0.8.0: fortlaufende Nummern, Später mit Termin, /offen neu
+
+describe('Nummern, Termin und eigene Punkte', () => {
+  test('/offen liest später mit Termin und neu mit Text (Groß- und Kleinschreibung bleibt)', async () => {
+    expect(kommando('3 später morgen')).toEqual({ art: 'punkt', nummer: 3, tun: 'spaeter', bis: 'morgen' })
+    expect(kommando('3 spaeter woche')).toEqual({ art: 'punkt', nummer: 3, tun: 'spaeter', bis: 'woche' })
+    expect(kommando('3 später')).toEqual({ art: 'punkt', nummer: 3, tun: 'spaeter' })
+    expect(kommando('3 später gestern').art).toBe('fehler')
+    expect(kommando('3 erledigt morgen').art).toBe('fehler')
+    expect(kommando('neu Mail an Kai schreiben')).toEqual({ art: 'neu', text: 'Mail an Kai schreiben' })
+    expect(kommando('Neu  zwei\nZeilen')).toEqual({ art: 'neu', text: 'zwei\nZeilen' })
+    expect(kommando('neu').art).toBe('fehler')
+  })
+
+  test('eigener Punkt: Titel aus den ersten Wörtern, ohne Antworten; die Auswertung lässt ihn in Ruhe', async () => {
+    const p = notiz('Schnellumschalter für alle laufenden Projekte, mit Zuständen.', 'n1', 5, 'A')
+    expect([p.titel, p.frage, p.optionen, p.vonNutzer, p.sitzung]).toEqual(['Schnellumschalter für alle laufenden Projekte …', 'Schnellumschalter für alle laufenden Projekte, mit Zuständen.', [], true, 'A'])
+    expect(notiz('Kurz.', 'n2', 5, '').titel).toBe('Kurz')
+    const l = zusammenfuehren([{ ...p, nr: 1 }], { neu: [], aktualisiert: [{ id: 'n1', frage: 'anders?' }], erledigt: ['n1'], erwaehnt: [], ueberblick: '' }, 6, () => 'x')
+    expect([l[0]?.status, l[0]?.frage, l[0]?.ohneBezug]).toEqual(['offen', p.frage, 0])
+    const text = ablageText({ punkte: [{ ...p, nr: 1 }], ueberblick: '' }, 1)
+    expect(text).not.toContain('Möglichkeiten')
+    expect(ablageLesen(text)?.punkte[0]?.vonNutzer).toBe(true)
+  })
+
+  test('der Zähler übersteht die Datei; geschlossene behalten ihre Nummer; der Verlauf nennt sie', async () => {
+    const text = ablageText({ punkte: [punkt('a', { nr: 3, status: 'erledigt' }), punkt('b', { nr: 4 })], ueberblick: '', hoechsteNr: 9 }, 1)
+    const a = ablageLesen(text)!
+    expect([a.hoechsteNr, a.punkte.map(p => p.nr)]).toEqual([9, [4, 3]])
+    // Ältere Datei ohne Zähler: die höchste Nummer in der Liste
+    expect(ablageLesen(text.replace(',"hoechsteNr":9', ''))?.hoechsteNr).toBe(4)
+
+    const e = verlaufsEintraege([punkt('b', { nr: 4 })], [punkt('b', { nr: 4, status: 'erledigt', ergebnis: 'Ja' })], SONNTAG)
+    expect(e[0]).toContain('## 14:00 · #4 b – entschieden')
+    expect(hoechsteImVerlauf(`${e[0]}\n### 09:00 · #12 alt – verworfen\n## 10:00 · ohne Nummer – entschieden\n`)).toBe(12)
+  })
+})
+
+test('/offen neu legt einen Punkt mit der nächsten Nummer an, /offen <Nr> später morgen legt ihn zurück; Nummern kommen nie zweimal', async ($, on) => {
+  const uhr = mock.clock(on, { now: SONNTAG })
+  const dateien = new Map([
+    [OFFEN, ablageText({ punkte: [punkt('a', { nr: 1, titel: 'Ausrollen' })], ueberblick: '', hoechsteNr: 4 }, 1)],
+    ['/projekt/offene-punkte/antworten-2026-10-01.md', '# Antworten\n\n## 10:00 · #6 Alt – entschieden\n'],
+  ])
+  grundlage(on, dateien, [{ name: 'antworten-2026-10-01.md', kind: 'file', size: 1, mtimeMs: 0, isLink: false }])
+  await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+  await uhr.settle()
+
+  const lauf = async (args: string) => String(((await $.command.run({ command: 'offen', args } as never)) as { text?: string }).text)
+  expect(await lauf('neu Gedanken-Knopf neben Senden bauen')).toBe('Punkt 7 angelegt: „Gedanken-Knopf neben Senden bauen“')
+  await uhr.settle()
+  expect(dateien.get(OFFEN)).toContain('### 7. Gedanken-Knopf neben Senden bauen')
+
+  expect(await lauf('7 später morgen')).toBe('„Gedanken-Knopf neben Senden bauen“: ruht bis Mo 12.10.')
+  await uhr.settle()
+  expect(dateien.get(OFFEN)).toContain('### 7. Gedanken-Knopf neben Senden bauen (ruht bis Mo 12.10.)')
+
+  await lauf('7 erledigt')
+  await uhr.settle()
+  expect(dateien.get('/projekt/offene-punkte/antworten-2026-10-11.md')).toContain('· #7 Gedanken-Knopf neben Senden bauen – entschieden')
+  expect(await lauf('neu Noch einer')).toBe('Punkt 8 angelegt: „Noch einer“')
 })

@@ -153,14 +153,15 @@ export const schluessel = (s: string): string => s.toLowerCase().replace(/[^\p{L
  * neue anhängen (ein Punkt mit gleichem Titel wie ein offener kommt nicht doppelt).
  * Offene Punkte ohne Bezug in dieser Antwort zählen einen Schritt Richtung veraltet.
  */
-export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: number, neueId: () => string): Punkt[] {
+export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: number, neueId: () => string, ab = 0): Punkt[] {
   const erledigt = new Set(a.erledigt)
   const aenderungen = new Map(a.aktualisiert.map(x => [x.id, x]))
   const bezug = new Set([...a.erwaehnt, ...aenderungen.keys()])
 
   const liste = punkte.map(p => {
     // Schon beantwortet (nur noch nicht bei Claude): gilt als geschlossen.
-    if (p.status !== 'offen' || p.ausstehend !== undefined) return p
+    // Vom Nutzer selbst angelegt: bleibt, wie er ist, bis er ihn beantwortet.
+    if (p.status !== 'offen' || p.ausstehend !== undefined || p.vonNutzer === true) return p
     if (erledigt.has(p.id)) return { ...p, status: 'erledigt' as const, ergebnis: 'laut Gespräch erledigt' }
     const { id: _id, ...felder } = aenderungen.get(p.id) ?? { id: '' }
     return { ...p, ...felder, ohneBezug: bezug.has(p.id) ? 0 : (p.ohneBezug ?? 0) + 1 }
@@ -174,22 +175,20 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     liste.push({ id: neueId(), ...n, status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt })
   }
 
-  return nummerieren(begrenzen(liste))
+  return nummerieren(begrenzen(liste), ab)
 }
 
+/** Die höchste Nummer in der Liste, offen oder geschlossen (0: keine). */
+export const hoechsteNr = (liste: readonly Punkt[]): number => Math.max(0, ...liste.map(p => p.nr ?? 0))
+
 /**
- * Gibt offenen Punkten ohne Nummer die kleinste freie. Vergebene Nummern bleiben, solange
- * der Punkt offen ist - "/offen 1 a" und danach "/offen 2 b" meinen die Punkte von vorher.
+ * Gibt offenen Punkten ohne Nummer die nächste: fortlaufend je Projekt, über der höchsten
+ * in der Liste und über ab (höchste je vergebene). Eine Nummer kommt nie zweimal vor und
+ * bleibt am Punkt, auch geschlossen - "#12" meint im Verlauf immer denselben Punkt.
  */
-export function nummerieren(liste: readonly Punkt[]): Punkt[] {
-  const vergeben = new Set(liste.filter(p => p.status === 'offen' && p.nr !== undefined).map(p => p.nr))
-  let n = 0
-  const naechste = () => {
-    do n++
-    while (vergeben.has(n))
-    return n
-  }
-  return liste.map(p => (p.status === 'offen' && p.nr === undefined ? { ...p, nr: naechste() } : p))
+export function nummerieren(liste: readonly Punkt[], ab = 0): Punkt[] {
+  let n = Math.max(ab, hoechsteNr(liste))
+  return liste.map(p => (p.status === 'offen' && p.nr === undefined ? { ...p, nr: ++n } : p))
 }
 
 /** Die beantworteten, noch nicht gesendeten Punkte (wo: nur diese), in der Reihenfolge der Antworten. */
@@ -328,18 +327,31 @@ export type Kommando =
   | { art: 'leeren' }
   | { art: 'senden' }
   | { art: 'fehler'; text: string }
-  | { art: 'punkt'; nummer: number; tun: 'erledigt' | 'weg' | 'spaeter' | 'aktuell' | 'option'; option?: number }
+  | { art: 'neu'; text: string }
+  | { art: 'punkt'; nummer: number; tun: 'erledigt' | 'weg' | 'spaeter' | 'aktuell' | 'option'; option?: number; bis?: Ruhezeit }
 
-/** Liest die Argumente von /offen: "", "leeren", "2 erledigt", "3 weg", "1 später", "2 a". */
+const ZEITWORT: Record<string, Ruhezeit> = { sitzung: 'sitzung', morgen: 'morgen', drei: 'drei', woche: 'woche' }
+
+/** Liest die Argumente von /offen: "", "leeren", "neu Text", "2 erledigt", "3 weg", "1 später", "1 später morgen", "2 a". */
 export function kommando(args: string): Kommando {
+  const neu = /^neu(?:\s+([\s\S]*))?$/i.exec(args.trim())
+  if (neu !== null) {
+    const text = (neu[1] ?? '').trim()
+    return text === '' ? { art: 'fehler', text: 'Verwendung: /offen neu <Text>' } : { art: 'neu', text }
+  }
   const a = args.trim().toLowerCase()
   if (a === '') return { art: 'liste' }
   if (a === 'leeren') return { art: 'leeren' }
   if (a === 'senden') return { art: 'senden' }
-  const m = /^(\d+)\s+(\S+)$/.exec(a)
+  const m = /^(\d+)\s+(\S+)(?:\s+(\S+))?$/.exec(a)
   if (m === null) return { art: 'fehler', text: HILFE }
   const nummer = Number(m[1])
   const wort = m[2] ?? ''
+  if (m[3] !== undefined) {
+    const bis = ZEITWORT[m[3]]
+    if ((wort !== 'später' && wort !== 'spaeter') || bis === undefined) return { art: 'fehler', text: HILFE }
+    return { art: 'punkt', nummer, tun: 'spaeter', bis }
+  }
   if (/^[a-d]$/.test(wort)) return { art: 'punkt', nummer, tun: 'option', option: wort.charCodeAt(0) - 97 }
   if (wort === 'erledigt' || wort === 'fertig') return { art: 'punkt', nummer, tun: 'erledigt' }
   if (wort === 'weg' || wort === 'verwerfen') return { art: 'punkt', nummer, tun: 'weg' }
@@ -349,7 +361,21 @@ export function kommando(args: string): Kommando {
   return { art: 'fehler', text: HILFE }
 }
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> a|b|c|d (Antwort wählen) · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen) · /offen neu <Text> · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+
+/** Ein Punkt, den der Nutzer selbst notiert (/offen neu): Titel aus den ersten Wörtern, ohne feste Antworten. */
+export function notiz(text: string, id: string, jetzt: number, sitzung: string): Punkt {
+  const frage = text.replace(/\s+/g, ' ').trim().slice(0, 2000)
+  const woerter = frage.split(' ')
+  let titel = woerter.slice(0, 5).join(' ').replace(/[.,;:!?]+$/, '')
+  if (titel.length > 60) titel = titel.slice(0, 59).trimEnd() + '…'
+  else if (woerter.length > 5) titel += ' …'
+  return {
+    id, titel, frage, info: 'Vom Nutzer notiert.', art: 'entscheidung', stufe: 'normal', abwaegung: '', anleitung: '',
+    optionen: [], status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt, vonNutzer: true,
+    ...(sitzung !== '' ? { sitzung } : {}),
+  }
+}
 
 const RAHMEN: Record<Stufe, string> = { blockiert: 'blockiert', normal: '', angebot: 'Angebot' }
 
@@ -452,14 +478,14 @@ export function stempeln(vorher: readonly Punkt[], nachher: readonly Punkt[], je
  * Was nur in der Datei steht, kommt dazu und behält seine Sitzung: steht in /offen, wird
  * aber nicht gefragt.
  */
-export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[]): Punkt[] {
+export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[], ab = 0): Punkt[] {
   const dort = new Map(datei.map(p => [p.id, p]))
   const liste = eigene.map(p => {
     const d = dort.get(p.id)
     if (d === undefined || p.status !== 'offen' || d.status === 'offen') return p
     // Hier wieder geöffnet, nicht vor dem Schließen dort: bleibt offen.
     if (p.geaendert !== undefined && p.geaendert >= (d.geaendert ?? 0)) return p
-    const { ausstehend: _a, nr: _n, ruht: _r, ergebnis: _e, ...rest } = p
+    const { ausstehend: _a, ruht: _r, ergebnis: _e, ...rest } = p
     return { ...rest, status: d.status, geaendert: d.geaendert, ...(d.ergebnis !== undefined ? { ergebnis: d.ergebnis } : {}) }
   })
   const bekannt = new Set(eigene.map(p => p.id))
@@ -468,13 +494,14 @@ export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[]): P
     if (bekannt.has(d.id)) continue
     const { ausstehend: _a, nr, ...rest } = d
     const p = { ...rest, sitzung: d.sitzung ?? 'unbekannt' }
-    if (d.status === 'offen' && nr !== undefined && !vergeben.has(nr)) {
-      vergeben.add(nr)
+    // Offen und hier schon vergeben (zwei Sitzungen zugleich): bekommt eine neue.
+    if (nr !== undefined && (d.status !== 'offen' || !vergeben.has(nr))) {
+      if (d.status === 'offen') vergeben.add(nr)
       liste.push({ ...p, nr })
     } else liste.push(p)
   }
 
-  return nummerieren(begrenzen(liste))
+  return nummerieren(begrenzen(liste), ab)
 }
 
 /** Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. */
@@ -493,7 +520,12 @@ export const mitCompact = (w: Warnung): boolean => w.schluessel.startsWith('kont
 // ---------------------------------------------------------------- Dateien
 
 /** Was zwischen den Sitzungen in der Datei steht. */
-export type Ablage = { punkte: Punkt[]; ueberblick: string }
+export type Ablage = {
+  punkte: Punkt[]
+  ueberblick: string
+  /** Höchste je vergebene Nummer; fehlt bei älteren Dateien (dann die höchste in der Liste). */
+  hoechsteNr?: number
+}
 
 const DATEN_ANFANG = '<!-- offene-punkte-daten'
 
@@ -529,11 +561,11 @@ export function ablageText(a: Ablage, jetzt: number): string {
       p.info !== '' ? `_${p.info}_` : '',
       (p.abwaegung ?? '') !== '' ? `Abwägung: ${p.abwaegung}` : '',
       p.anleitung,
-      `Möglichkeiten:\n${optionenText(p)}`,
+      p.optionen.length > 0 ? `Möglichkeiten:\n${optionenText(p)}` : '',
     ].filter(t => t !== '').join('\n\n')).join('\n\n'))
   if (fertig.length > 0) teile.push('## Zuletzt erledigt\n\n' + fertig.map(p => `- ${p.status === 'verworfen' ? '✗' : '✓'} ${p.titel}${p.ergebnis ? `: ${p.ergebnis}` : ''}`).join('\n'))
   // "-->" darf im Kommentar nicht vorkommen; in JSON-Zeichenketten ist > dasselbe Zeichen.
-  const daten = JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick }).replace(/-->/g, '--\\u003e')
+  const daten = JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)) }).replace(/-->/g, '--\\u003e')
   teile.push(`${DATEN_ANFANG}\n${daten}\n-->`)
 
   return teile.join('\n\n') + '\n'
@@ -552,7 +584,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
     return null
   }
   if (typeof d !== 'object' || d === null) return null
-  const roh = d as { punkte?: unknown; ueberblick?: unknown }
+  const roh = d as { punkte?: unknown; ueberblick?: unknown; hoechsteNr?: unknown }
   const punkte: Punkt[] = []
   for (const x of Array.isArray(roh.punkte) ? roh.punkte : []) {
     if (typeof x !== 'object' || x === null) continue
@@ -561,7 +593,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
     const status = p.status === 'erledigt' || p.status === 'verworfen' ? p.status : 'offen'
     punkte.push({
       id: p.id,
-      ...(typeof p.nr === 'number' && status === 'offen' ? { nr: p.nr } : {}),
+      ...(typeof p.nr === 'number' ? { nr: p.nr } : {}),
       titel: p.titel,
       frage: p.frage,
       info: text(p.info, 300),
@@ -578,10 +610,13 @@ export function ablageLesen(inhalt: string): Ablage | null {
       ...(typeof p.sitzung === 'string' ? { sitzung: p.sitzung } : {}),
       ...(typeof p.geaendert === 'number' ? { geaendert: p.geaendert } : {}),
       ...(ruheLesen(p.ruht) ?? {}),
+      ...(p.vonNutzer === true ? { vonNutzer: true } : {}),
     })
   }
 
-  return { punkte: nummerieren(begrenzen(punkte)), ueberblick: text(roh.ueberblick, 2000) }
+  const ab = typeof roh.hoechsteNr === 'number' ? roh.hoechsteNr : 0
+  const liste = nummerieren(begrenzen(punkte), ab)
+  return { punkte: liste, ueberblick: text(roh.ueberblick, 2000), hoechsteNr: Math.max(ab, hoechsteNr(liste)) }
 }
 
 function ruheLesen(x: unknown): { ruht: Ruhe } | undefined {
@@ -600,19 +635,28 @@ export function verlaufsEintraege(vorher: readonly Punkt[], nachher: readonly Pu
     const war = alt.get(p.id)
     if (war === undefined) continue
     if (war.status === 'offen' && p.status !== 'offen') eintraege.push(verlaufsEintrag(p, jetzt))
-    if (war.status !== 'offen' && p.status === 'offen') eintraege.push(`## ${uhrzeit(jetzt)} · ${p.titel} – wieder geöffnet\n`)
+    if (war.status !== 'offen' && p.status === 'offen') eintraege.push(`## ${uhrzeit(jetzt)} · ${nrText(p)}${p.titel} – wieder geöffnet\n`)
   }
   return eintraege
+}
+
+const nrText = (p: Punkt) => (p.nr !== undefined ? `#${p.nr} ` : '')
+
+/** Höchste Nummer in einem Verlauf ("## 09:12 · #12 Titel – entschieden"; Monatsdatei mit ###). */
+export function hoechsteImVerlauf(text: string): number {
+  let n = 0
+  for (const m of text.matchAll(/^#{2,3} \d{2}:\d{2} · #(\d+) /gm)) n = Math.max(n, Number(m[1]))
+  return n
 }
 
 function verlaufsEintrag(p: Punkt, jetzt: number): string {
   const wie = p.status === 'verworfen' ? 'verworfen' : p.art === 'aufgabe' ? 'erledigt' : 'entschieden'
   return [
-    `## ${uhrzeit(jetzt)} · ${p.titel} – ${wie}`,
+    `## ${uhrzeit(jetzt)} · ${nrText(p)}${p.titel} – ${wie}`,
     `**Frage:** ${p.frage}`,
     p.info !== '' ? `**Warum offen:** ${p.info}` : '',
     (p.abwaegung ?? '') !== '' ? `**Abwägung:** ${p.abwaegung}` : '',
-    `**Möglichkeiten:**\n${optionenText(p)}`,
+    p.optionen.length > 0 ? `**Möglichkeiten:**\n${optionenText(p)}` : '',
     `**Ergebnis:** ${p.ergebnis ?? wie}`,
   ].filter(t => t !== '').join('\n\n') + '\n'
 }
