@@ -22,7 +22,9 @@ In "abwaegung" stehen die Argumente aus der Antwort, die für die Entscheidung z
 
 Für jeden neuen Punkt: eine kurze Frage an den Nutzer und 1 bis 4 Antwortmöglichkeiten (bei einem Angebot reicht oft eine: das konkrete Ja; ablehnen kann der Nutzer immer mit "Nicht relevant"). Jede Möglichkeit hat ein kurzes "label" (höchstens 6 Wörter) und eine "antwort": der Satz, den der Nutzer dem Assistenten damit schickt (Ich-Form, konkret, z. B. "Ja, rolle es aus."). Braucht eine Antwort noch eine Eingabe des Nutzers (eigener Text, eine Zahl, eine Fehlermeldung), ende die "antwort" mit einem Doppelpunkt - sie wird dann nur vorbereitet, nicht abgeschickt.
 
-WER HANDELT, MUSS KLAR SEIN: In "antwort" spricht immer der Nutzer ("ich" = der Nutzer, "du" = der Assistent). Das "label" steht ohne "ich" und ohne "du", ohne Personalpronomen: entweder als Anweisung an den Assistenten ("Übernimm: prüfen", "Rolle aus") oder mit ausdrücklichem Handelnden ("Mache ich selbst" ist verboten, stattdessen "Nutzer prüft selbst"). Nie ein Label wie "Ich erledige das", bei dem offen bleibt, wer gemeint ist.
+WER HANDELT, MUSS KLAR SEIN: In "antwort" spricht immer der Nutzer ("ich" = der Nutzer, "du" = der Assistent). Sie wird genau so abgeschickt, als hätte der Nutzer sie selbst getippt: nie aus Sicht des Assistenten ("Ich übernehme das" hieße dann, der Nutzer übernimmt) und nie über den Assistenten in der dritten Person ("Claude soll …", "Der Assistent prüft …"). Soll der Assistent handeln: "Prüf das bitte.", "Ja, rolle es aus." Handelt der Nutzer selbst: "Ich prüfe das selbst, Ergebnis:". Das "label" steht ohne "ich" und ohne "du", ohne Personalpronomen: entweder als Anweisung an den Assistenten ("Übernimm: prüfen", "Rolle aus") oder mit ausdrücklichem Handelnden ("Mache ich selbst" ist verboten, stattdessen "Nutzer prüft selbst"). Nie ein Label wie "Ich erledige das", bei dem offen bleibt, wer gemeint ist.
+
+ADRESSEN: Nennt die Antwort die Webseite des Projekts (z. B. https://beispiel.de), schreib Seiten darauf in "frage", "info" und "anleitung" mit voller Adresse ("https://beispiel.de/admin/vorschlaege" statt "/admin/vorschlaege") - sie werden dann zum Link.
 
 MEHRFACHAUSWAHL: Schließen sich die Möglichkeiten nicht gegenseitig aus, sondern lassen sich sinnvoll kombinieren (z. B. welche von mehreren Erweiterungen, welche Projekte, welche Schritte), setze "mehrfach": true - der Nutzer kann dann mehrere ankreuzen, ihre "antwort"-Sätze gehen zusammen an den Assistenten. Formuliere jede "antwort" dann so, dass sie auch in Kombination mit den anderen trägt. Bei Entweder-oder-Entscheidungen (A oder B, Ja oder Nein) "mehrfach": false.
 
@@ -175,7 +177,7 @@ export const ERKANNT = 'laut Gespräch erledigt'
 export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
 
 /** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
-export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern in offene-punkte/offen.md (### <Nr>. <Titel>). Hast du etwas erledigt, das dort als offener Punkt steht, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) - der Punkt schließt sich dann sofort. Nur für Punkte, die wirklich erledigt sind.'
+export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern in offene-punkte/offen.md (### <Nr>. <Titel>). Hast du etwas erledigt, das dort als offener Punkt steht, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) - der Punkt schließt sich dann sofort. Nur für Punkte, die wirklich erledigt sind. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
 /** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern. */
 export function erledigtMarken(antwort: string): number[] {
