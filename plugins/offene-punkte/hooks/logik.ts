@@ -12,7 +12,7 @@ export const AUFTRAG = `Du liest die letzte Antwort eines Coding-Assistenten an 
 
 Typisch: "vor dem Freischalten brauche ich von dir ...", Freigaben zum Ausrollen/Löschen/Pushen, Texte oder Zugangsdaten, die der Nutzer liefern muss, Abnahmen und Prüfungen von Hand ("prüfe bitte ...", "noch offen ..."), Entscheidungen zwischen Varianten, angebotene nächste Schritte ("soll ich ...?", "könnte ich auch vorziehen").
 
-Kein offener Punkt: was der Assistent schon erledigt hat, reine Erklärungen, Selbstverständliches, Dinge ohne Zutun des Nutzers. Auch keiner: was der Assistent über eine ANDERE Claude-Sitzung berichtet (ein anderes Projekt, eine Sitzung auf einem anderen Rechner) - deren offene Punkte, Fragen und Arbeit werden dort geführt, auch wenn er anbietet, sie hier durchzugehen. Ein Punkt ist nur, was diese Sitzung selbst vom Nutzer braucht.
+Kein offener Punkt: was der Assistent schon erledigt hat, reine Erklärungen, Selbstverständliches, Dinge ohne Zutun des Nutzers. Auch keiner: Prüfungen, die der Assistent selbst machen kann (Logs, Dienststatus, Tests, Dateien nachsehen) - es sei denn, er bittet ausdrücklich den Nutzer, weil nur dieser es sehen kann (Bildschirm, Handy, Postfach). Und keiner für eine Frage, die der Assistent gerade selbst als Auswahl-Dialog stellt. Auch keiner: was der Assistent über eine ANDERE Claude-Sitzung berichtet (ein anderes Projekt, eine Sitzung auf einem anderen Rechner) - deren offene Punkte, Fragen und Arbeit werden dort geführt, auch wenn er anbietet, sie hier durchzugehen. Ein Punkt ist nur, was diese Sitzung selbst vom Nutzer braucht.
 
 Jeder Punkt hat eine "art": "entscheidung", wenn der Nutzer nur wählen oder freigeben muss; "aufgabe", wenn er selbst etwas tun muss (etwas auf seinem Rechner ausführen, einrichten, Daten liefern, von Hand prüfen). Bei einer Aufgabe schreibe in "anleitung", was genau zu tun ist, so dass der Nutzer NICHT im Verlauf suchen muss: nummerierte Schritte, alle Befehle, Pfade, Dateinamen, Einstellungen und Werte WÖRTLICH aus der Antwort, Befehle und Dateiinhalte in Markdown-Codeblöcken (Shell-Befehle mit \`\`\`bash). Nichts erfinden, nichts weglassen, was zum Ausführen nötig ist. Bei einer Entscheidung bleibt "anleitung" leer, außer ein Satz Kontext hilft beim Entscheiden.
 
@@ -38,19 +38,23 @@ Diese Möglichkeiten gibt es immer schon als feste Knöpfe, gib sie NICHT selbst
 Außerdem führst du einen kurzen ÜBERBLICK über die ganze Sitzung, damit der Nutzer den Faden behält: Schreibe den bisherigen Überblick (unten) mit dem Neuen aus der Antwort fort. Markdown, höchstens 8 Zeilen, als Liste mit diesen fett gesetzten Anfängen, nur wenn es etwas dazu gibt: **Ziel:** worum es in der Sitzung geht · **Erledigt:** die wichtigsten Ergebnisse (knapp, neueste zuerst, Älteres zusammenfassen) · **Gerade:** woran zuletzt gearbeitet wurde · **Als Nächstes:** der nächste Schritt. Keine Wiederholung der offenen Punkte.
 
 Bereits bekannte offene Punkte stehen unten mit ID. Melde sie NICHT erneut als neu, auch nicht mit anderen Worten. Für jeden bekannten Punkt gilt:
-- durch die neue Antwort oder die letzte Nachricht des Nutzers erledigt: ID unter "erledigt";
+- erledigt: unter "erledigt" als {"id":"...","grund":"wenige Wörter, warum"}. Erledigt ist ein Punkt, wenn
+  · die neue Antwort oder die letzte Nachricht des Nutzers ihn erledigt (getan, entschieden, beantwortet);
+  · er ÜBERHOLT ist: das Gespräch hat ihn hinfällig gemacht (anderer Weg gewählt, Thema abgeschlossen, Frage durch spätere Arbeit beantwortet, der Assistent hat es inzwischen selbst geprüft);
+  · STILLES OK: Es war eine Prüfbitte an den Nutzer (ansehen, testen, neu laden, ausprobieren, Rückmeldung ob es klappt) und die letzte Nachricht des Nutzers macht mit etwas anderem weiter, ohne einen Fehler oder ein Problem zu melden. Entscheidungen, Freigaben und Daten, die der Nutzer liefern muss, schließt das stille OK NICHT.
+  Im Zweifel offen lassen.
 - noch offen, aber die Antwort bringt Neues dazu (genauere Anleitung, geänderte Frage oder Möglichkeiten, andere Stufe): unter "aktualisiert" mit seiner ID und NUR den Feldern, die sich ändern;
 - noch offen und die Antwort oder die Nachricht des Nutzers geht darauf ein, ohne dass sich etwas ändert: ID unter "erwaehnt".
 
 Antworte NUR mit JSON, ohne Erklärung, in genau dieser Form:
-{"neu":[{"titel":"2-5 Wörter","art":"aufgabe","stufe":"normal","frage":"Ein Satz?","info":"Warum offen, ein Satz.","abwaegung":"","anleitung":"1. ...\n\`\`\`bash\nbefehl\n\`\`\`","mehrfach":false,"optionen":[{"label":"...","antwort":"..."}]}],"aktualisiert":[{"id":"...","anleitung":"..."}],"erledigt":["id"],"erwaehnt":["id"],"ueberblick":"- **Ziel:** ..."}
+{"neu":[{"titel":"2-5 Wörter","art":"aufgabe","stufe":"normal","frage":"Ein Satz?","info":"Warum offen, ein Satz.","abwaegung":"","anleitung":"1. ...\n\`\`\`bash\nbefehl\n\`\`\`","mehrfach":false,"optionen":[{"label":"...","antwort":"..."}]}],"aktualisiert":[{"id":"...","anleitung":"..."}],"erledigt":[{"id":"...","grund":"..."}],"erwaehnt":["id"],"ueberblick":"- **Ziel:** ..."}
 Gibt es nichts davon: {"neu":[],"aktualisiert":[],"erledigt":[],"erwaehnt":[],"ueberblick":"..."}`
 
 /** Der wechselnde Teil: bekannte Punkte, letzte Nachricht des Nutzers, die Antwort(en). */
 export function anfrage(antworten: string | readonly string[], letzteEingabe: string, offene: readonly Punkt[], ueberblick = ''): string {
   const bekannt = offene.length === 0
     ? '(keine)'
-    : offene.map(p => `- ${p.id}: ${p.titel} - ${p.frage}`).join('\n')
+    : offene.map(p => `- ${p.id} (${p.art}): ${p.titel} - ${p.frage}${p.info !== '' ? ` [${p.info}]` : ''}`).join('\n')
 
   return `BISHERIGER ÜBERBLICK:\n${ueberblick || '(noch keiner)'}\n\nBEKANNTE OFFENE PUNKTE:\n${bekannt}\n\nLETZTE NACHRICHT DES NUTZERS:\n${letzteEingabe.slice(0, 2000) || '(keine)'}\n\n${antwortTeil(antworten)}`
 }
@@ -76,6 +80,8 @@ export type Auswertung = {
   neu: { titel: string; art: Art; stufe: Stufe; frage: string; info: string; abwaegung: string; anleitung: string; optionen: Option[] }[]
   aktualisiert: Aenderung[]
   erledigt: string[]
+  /** Kurzer Grund je erledigter ID, wenn das Modell einen genannt hat. */
+  gruende?: Record<string, string>
   erwaehnt: string[]
   /** Fortgeschriebener Überblick; leer, wenn das Modell keinen geliefert hat. */
   ueberblick: string
@@ -147,8 +153,52 @@ export function lies(roh: string): Auswertung | null {
     aktualisiert.push(aenderung)
   }
 
-  return { neu, aktualisiert, erledigt: ids(d.erledigt), erwaehnt: ids(d.erwaehnt), ueberblick: text(d.ueberblick, 2000) }
+  // "erledigt": IDs oder (seit 0.11.0) {id, grund}
+  const erledigt: string[] = []
+  const gruende: Record<string, string> = {}
+  for (const x of Array.isArray(d.erledigt) ? d.erledigt : []) {
+    if (typeof x === 'string') erledigt.push(x)
+    else if (typeof x === 'object' && x !== null && typeof (x as Record<string, unknown>).id === 'string') {
+      const id = (x as Record<string, unknown>).id as string
+      erledigt.push(id)
+      const g = text((x as Record<string, unknown>).grund, 120)
+      if (g !== '') gruende[id] = g
+    }
+  }
+
+  return { neu, aktualisiert, erledigt, gruende, erwaehnt: ids(d.erwaehnt), ueberblick: text(d.ueberblick, 2000) }
 }
+
+/** Ergebnis eines Punkts, den die Auswertung geschlossen hat (davor ggf. „ – Grund“). */
+export const ERKANNT = 'laut Gespräch erledigt'
+/** So lange zeigen /offen und claude-web automatisch geschlossene Punkte mit „wieder öffnen“. */
+export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
+
+/** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
+export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern in offene-punkte/offen.md (### <Nr>. <Titel>). Hast du etwas erledigt, das dort als offener Punkt steht, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) - der Punkt schließt sich dann sofort. Nur für Punkte, die wirklich erledigt sind.'
+
+/** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern. */
+export function erledigtMarken(antwort: string): number[] {
+  const nummern = new Set<number>()
+  for (const m of antwort.matchAll(/erledigt:\s*((?:#\d+(?:\s*(?:,|und|\+)\s*)?)+)/gi)) {
+    for (const n of (m[1] ?? '').matchAll(/#(\d+)/g)) nummern.add(Number(n[1]))
+  }
+  return [...nummern]
+}
+
+/** Schließt offene Punkte mit diesen Nummern (von Claude als erledigt gemeldet). */
+export function perMarkeSchliessen(liste: readonly Punkt[], nummern: readonly number[], jetzt: number): Punkt[] {
+  const n = new Set(nummern)
+  const grund = 'von Claude als erledigt gemeldet'
+  return liste.map(p => (p.status === 'offen' && p.ausstehend === undefined && p.nr !== undefined && n.has(p.nr)
+    ? { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
+    : p))
+}
+
+/** Automatisch geschlossene Punkte, die noch angezeigt werden (neueste zuerst). */
+export const autoErledigt = (liste: readonly Punkt[], jetzt: number): Punkt[] =>
+  liste.filter(p => p.status === 'erledigt' && p.auto !== undefined && jetzt - p.auto.zeit < AUTO_ZEIGEN_MS)
+    .sort((a, b) => (b.auto?.zeit ?? 0) - (a.auto?.zeit ?? 0))
 
 /** Für den Vergleich gleicher Punkte: klein, ohne Satzzeichen. */
 export const schluessel = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -167,7 +217,11 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     // Schon beantwortet (nur noch nicht bei Claude): gilt als geschlossen.
     // Vom Nutzer selbst angelegt: bleibt, wie er ist, bis er ihn beantwortet.
     if (p.status !== 'offen' || p.ausstehend !== undefined || p.vonNutzer === true) return p
-    if (erledigt.has(p.id)) return { ...p, status: 'erledigt' as const, ergebnis: 'laut Gespräch erledigt' }
+    if (erledigt.has(p.id)) {
+      const grund = a.gruende?.[p.id] ?? ''
+      return { ...p, status: 'erledigt' as const, ergebnis: ERKANNT + (grund !== '' ? ` – ${grund}` : ''),
+               auto: { grund: grund || ERKANNT, zeit: jetzt }, geaendert: jetzt }
+    }
     const { id: _id, ...felder } = aenderungen.get(p.id) ?? { id: '' }
     return { ...p, ...felder, ohneBezug: bezug.has(p.id) ? 0 : (p.ohneBezug ?? 0) + 1 }
   })
@@ -575,7 +629,7 @@ export function ablageText(a: Ablage, jetzt: number): string {
       p.anleitung,
       p.optionen.length > 0 ? `Möglichkeiten:\n${optionenText(p)}` : '',
     ].filter(t => t !== '').join('\n\n')).join('\n\n'))
-  if (fertig.length > 0) teile.push('## Zuletzt erledigt\n\n' + fertig.map(p => `- ${p.status === 'verworfen' ? '✗' : '✓'} ${p.titel}${p.ergebnis ? `: ${p.ergebnis}` : ''}`).join('\n'))
+  if (fertig.length > 0) teile.push('## Zuletzt erledigt\n\n' + fertig.map(p => `- ${p.status === 'verworfen' ? '✗' : p.auto !== undefined ? '🤖' : '✓'} ${p.titel}${p.ergebnis ? `: ${p.ergebnis}` : ''}`).join('\n'))
   // "-->" darf im Kommentar nicht vorkommen; in JSON-Zeichenketten ist > dasselbe Zeichen.
   const daten = JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)) }).replace(/-->/g, '--\\u003e')
   teile.push(`${DATEN_ANFANG}\n${daten}\n-->`)
@@ -623,12 +677,19 @@ export function ablageLesen(inhalt: string): Ablage | null {
       ...(typeof p.geaendert === 'number' ? { geaendert: p.geaendert } : {}),
       ...(ruheLesen(p.ruht) ?? {}),
       ...(p.vonNutzer === true ? { vonNutzer: true } : {}),
+      ...(autoLesen(p.auto) ?? {}),
     })
   }
 
   const ab = typeof roh.hoechsteNr === 'number' ? roh.hoechsteNr : 0
   const liste = nummerieren(begrenzen(punkte), ab)
   return { punkte: liste, ueberblick: text(roh.ueberblick, 2000), hoechsteNr: Math.max(ab, hoechsteNr(liste)) }
+}
+
+function autoLesen(x: unknown): { auto: { grund: string; zeit: number } } | undefined {
+  if (typeof x !== 'object' || x === null) return undefined
+  const a = x as Record<string, unknown>
+  return typeof a.zeit === 'number' ? { auto: { grund: text(a.grund, 120) || ERKANNT, zeit: a.zeit } } : undefined
 }
 
 function ruheLesen(x: unknown): { ruht: Ruhe } | undefined {

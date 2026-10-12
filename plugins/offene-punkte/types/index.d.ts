@@ -82,6 +82,11 @@ export type Punkt = {
   ruht?: Ruhe
   /** Vom Nutzer selbst angelegt (/offen neu): die Auswertung schließt, ändert und altert ihn nicht. */
   vonNutzer?: boolean
+  /**
+   * Ohne Zutun des Nutzers geschlossen (Auswertung oder „erledigt: #N“ von Claude): warum und wann.
+   * /offen und claude-web zeigen solche Punkte eine Weile mit eigenem Zeichen und „wieder öffnen“.
+   */
+  auto?: { grund: string; zeit: number }
 }
 
 export type Ruhe = { bis?: number; sitzung?: string }

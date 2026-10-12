@@ -351,3 +351,36 @@ test('/offen neu legt einen Punkt mit der nächsten Nummer an, /offen <Nr> spät
   expect(dateien.get('/projekt/offene-punkte/antworten-2026-10-11.md')).toContain('· #7 Gedanken-Knopf neben Senden bauen – entschieden')
   expect(await lauf('neu Noch einer')).toBe('Punkt 8 angelegt: „Noch einer“')
 })
+
+test('„erledigt: #N“ von Claude schließt sofort, /offen zeigt es mit 🤖, aktuell öffnet wieder', async ($, on) => {
+  const uhr = mock.clock(on, { now: SONNTAG })
+  const dateien = new Map([[OFFEN, ablageText({
+    punkte: [punkt('a', { nr: 1, titel: 'Seite neu laden' }), punkt('b', { nr: 2, titel: 'Freigabe' })],
+    ueberblick: '',
+  }, 1)]])
+  grundlage(on, dateien)
+  on('prompt.context', (_, e) => ({ blocks: e.blocks }) as never)
+  await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+  await uhr.settle()
+
+  // Der Hinweis an Claude steht einmal im Kontext der Unterhaltung
+  const kontext = await $.prompt.context({ blocks: [] } as never)
+  expect(JSON.stringify(kontext)).toContain('erledigt: #<Nr>')
+
+  // Kurze Antwort (keine Auswertung durch Haiku) - die Marke wirkt trotzdem
+  await $.turn.complete({ answer: 'Neu geladen.\nerledigt: #1', reason: 'answer', durationMs: 10, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+  const lauf = async (args: string) => String(((await $.command.run({ command: 'offen', args } as never)) as { text?: string }).text)
+  const liste = await lauf('')
+  expect(liste).toContain('Automatisch erledigt (1')
+  expect(liste).toContain('🤖 1. Seite neu laden – von Claude als erledigt gemeldet')
+  // Gegenprobe: #2 ist nicht genannt und bleibt offen
+  expect(liste).toMatch(/2\. Freigabe/)
+  expect(String(dateien.get(OFFEN))).toContain('- 🤖 Seite neu laden')
+
+  expect(await lauf('1 aktuell')).toBe('„Seite neu laden“ ist wieder offen.')
+  await uhr.settle()
+  const danach = await lauf('')
+  expect(danach).not.toContain('Automatisch erledigt')
+  expect(danach).toMatch(/1\. Seite neu laden/)
+})

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Auswertung } from '../hooks/logik'
 
 import type { Punkt } from '../types'
-import { MAX_PUNKTE, anfrage, brauchtErgaenzung, lies, offene, statuszeile, zusammenfuehren } from '../hooks/logik'
+import { AUTO_ZEIGEN_MS, MAX_PUNKTE, ablageLesen, ablageText, anfrage, autoErledigt, brauchtErgaenzung, erledigtMarken, lies, offene, perMarkeSchliessen, statuszeile, zusammenfuehren } from '../hooks/logik'
 
 const neuer = (titel: string, frage: string): Auswertung['neu'][number] =>
   ({ titel, frage, info: '', art: 'entscheidung', stufe: 'normal', abwaegung: '', anleitung: '', optionen: [{ label: 'Ja', antwort: '' }] })
@@ -100,8 +100,53 @@ describe('Liste führen', () => {
 
   test('die Anfrage nennt bekannte Punkte mit ID und kürzt lange Antworten von vorn', async () => {
     const text = anfrage('x'.repeat(20_000) + 'SCHLUSS', 'mach weiter', [punkt('p7', 'Cronjob')])
-    expect(text).toContain('- p7: Cronjob')
+    expect(text).toMatch(/- p7 \(entscheidung\): Cronjob/)
     expect(text).toContain('SCHLUSS')
     expect(text.length).toBeLessThan(13_000)
+  })
+})
+
+describe('Selbst als erledigt erkennen (0.11.0)', () => {
+  test('erledigt kommt als ID oder mit Grund; der Grund steht am Punkt', async () => {
+    const a = lies('{"neu":[],"erledigt":["p1",{"id":"p2","grund":"Nutzer macht weiter, kein Fehler"}],"erwaehnt":[]}')
+    expect(a?.erledigt).toEqual(['p1', 'p2'])
+    expect(a?.gruende).toEqual({ p2: 'Nutzer macht weiter, kein Fehler' })
+    const liste = zusammenfuehren([punkt('p1', 'A'), punkt('p2', 'B'), punkt('p3', 'C')], a as Auswertung, 500, () => 'x')
+    const [p1, p2, p3] = ['p1', 'p2', 'p3'].map(id => liste.find(p => p.id === id))
+    expect(p1?.auto).toEqual({ grund: 'laut Gespräch erledigt', zeit: 500 })
+    expect(p2?.ergebnis).toBe('laut Gespräch erledigt – Nutzer macht weiter, kein Fehler')
+    expect(p2?.auto?.grund).toBe('Nutzer macht weiter, kein Fehler')
+    // Gegenprobe: nicht genannt bleibt offen und ohne Zeichen
+    expect(p3?.status).toBe('offen')
+    expect(p3?.auto).toBeUndefined()
+  })
+
+  test('„erledigt: #N“ in Claudes Antwort: Nummern, auch mehrere; sonst keine', async () => {
+    expect(erledigtMarken('Fertig.\nerledigt: #3, #5 und #7')).toEqual([3, 5, 7])
+    expect(erledigtMarken('Erledigt: #12')).toEqual([12])
+    // Gegenproben: ohne Doppelpunkt und Raute kein Treffer
+    expect(erledigtMarken('Punkt 3 ist erledigt, #4 noch nicht')).toEqual([])
+    expect(erledigtMarken('Das ist erledigt: alles gut')).toEqual([])
+  })
+
+  test('per Marke schließt nur offene Punkte mit dieser Nummer, nicht beantwortete', async () => {
+    const liste = [punkt('a', 'A', { nr: 3 }), punkt('b', 'B', { nr: 4 }),
+      punkt('c', 'C', { nr: 5, ausstehend: { status: 'erledigt', ergebnis: 'x', text: 'x', wo: 'sammlung', reihe: 1 } })]
+    const neu = perMarkeSchliessen(liste, [3, 5, 9], 100)
+    expect(neu[0]?.status).toBe('erledigt')
+    expect(neu[0]?.auto?.grund).toBe('von Claude als erledigt gemeldet')
+    expect(neu[1]?.status).toBe('offen')
+    expect(neu[2]?.status).toBe('offen')
+  })
+
+  test('automatisch erledigte: 24 h sichtbar, überstehen die Datei, eigenes Zeichen', async () => {
+    const zu = punkt('a', 'Seite neu laden', { nr: 1, status: 'erledigt', ergebnis: 'x', auto: { grund: 'stilles OK', zeit: 1000 } })
+    const vonHand = punkt('b', 'B', { nr: 2, status: 'erledigt', ergebnis: 'als erledigt markiert' })
+    expect(autoErledigt([zu, vonHand], 2000).map(p => p.id)).toEqual(['a'])
+    expect(autoErledigt([zu], 1000 + AUTO_ZEIGEN_MS)).toEqual([])
+    const datei = ablageText({ punkte: [zu, vonHand], ueberblick: '' }, 2000)
+    expect(datei).toContain('- 🤖 Seite neu laden')
+    expect(datei).toContain('- ✓ B')
+    expect(ablageLesen(datei)?.punkte.find(p => p.id === 'a')?.auto).toEqual({ grund: 'stilles OK', zeit: 1000 })
   })
 })

@@ -7,6 +7,7 @@ import {
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
+  ERKANNT, HINWEIS_CLAUDE, autoErledigt, erledigtMarken, perMarkeSchliessen,
 } from './logik'
 import type { Ruhezeit, Sicht, Teil } from './logik'
 
@@ -45,7 +46,6 @@ const VERWERFEN = '__verwerfen'
 const AKTUELL = '__aktuell'
 const BEFEHL = '__befehl:'
 
-const ERKANNT = 'laut Gespräch erledigt'
 
 // Einstellungen, von register gesetzt.
 let modell = 'haiku'
@@ -275,7 +275,7 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
     const neu = offene(await read($, punkteA)).filter(p => !bekannt.has(p.id)).length
     const meldungen = [
       neu === 1 ? '1 neuer offener Punkt' : neu > 1 ? `${neu} neue offene Punkte` : '',
-      ...geschlossen.filter(p => p.ergebnis === ERKANNT).map(p => `„${p.titel}“ als erledigt erkannt`),
+      ...geschlossen.filter(p => p.auto !== undefined && p.ergebnis?.startsWith(ERKANNT)).map(p => `🤖 „${p.titel}“ erledigt (${p.auto?.grund})`),
     ].filter(t => t !== '')
     if (meldungen.length > 0) {
       const zusatz = geschlossen.length > 0 ? ' · /offen zum Wiederöffnen' : ' – Frage über der Eingabe'
@@ -302,7 +302,7 @@ async function wiederOeffnen($: EngineInterface, id: string) {
   const ab = await nummernAb($)
   await aendere($, liste => nummerieren(liste.map(p => {
     if (p.id !== id) return p
-    const { ergebnis: _e, ruht: _r, ...rest } = p
+    const { ergebnis: _e, ruht: _r, auto: _a, ...rest } = p
     return { ...rest, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0, sitzung }
   }), ab))
 }
@@ -658,6 +658,12 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   }
   const alle = await read($, punkteA)
   const punkt = offene(alle).find(p => p.nr === k.nummer)
+  // Wieder öffnen, was ohne Zutun geschlossen wurde (claude-web: Knopf „wieder öffnen“)
+  const zu = punkt === undefined && k.tun === 'aktuell' ? alle.find(p => p.nr === k.nummer && p.status !== 'offen') : undefined
+  if (zu !== undefined) {
+    await wiederOeffnen($, zu.id)
+    return `„${zu.titel}“ ist wieder offen.`
+  }
   if (punkt === undefined) {
     const beantwortet = ausstehende(alle).find(p => p.nr === k.nummer)
     return beantwortet !== undefined
@@ -809,8 +815,24 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Claude schließt selbst: „erledigt: #3“ in der Antwort schließt den Punkt sofort (auch bei kurzen Antworten).
+  on('prompt.context', async ($, e, next) => {
+    const r = await next(e)
+    return { ...r, blocks: [...r.blocks, { name: 'offenePunkte', text: HINWEIS_CLAUDE }] }
+  })
+
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    const marken = e.agentId === undefined && e.reason === 'answer' ? erledigtMarken(e.answer) : []
+    if (marken.length > 0) {
+      $.clock.after(0, () => {
+        void (async () => {
+          const jetzt = await $.clock.now()
+          const zu = await aendere($, l => perMarkeSchliessen(l, marken, jetzt))
+          if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ erledigt`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
+        })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+      })
+    }
     if (e.agentId === undefined && e.reason === 'answer' && auswertenNoetig(e.answer, mindestLaenge)) {
       const antwort = e.answer
       const eingabe = letzteEingabe
@@ -845,8 +867,11 @@ export const register: Register = (on, options) => {
     // Zurueckgelegtes nur mit Titel und Termin, damit es nicht wie eine offene Frage aussieht.
     const ruhendText = ruhend.length === 0 ? '' : `\n\nZurückgelegt (${ruhend.length}):\n` + ruhend
       .map((p, i) => `${p.nr ?? i + 1}. ${p.titel} – ${ruheVermerk(p, s)}`).join('\n')
+    const auto = autoErledigt(await read($, punkteA), await $.clock.now())
+    const autoText = auto.length === 0 ? '' : `\n\nAutomatisch erledigt (${auto.length}, /offen <Nr> aktuell öffnet wieder):\n` + auto
+      .map(p => `🤖 ${p.nr ?? '?'}. ${p.titel} – ${p.auto?.grund}`).join('\n')
     return {
-      text: kopfzeile + aktivText + ruhendText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen neu <Text>${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + autoText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen neu <Text>${fuss}`,
     }
   })
 
@@ -988,7 +1013,7 @@ export const register: Register = (on, options) => {
         {fertig.map(p => (
           <Box key={`f-${p.id}`} flexDirection="row">
             <Text dimColor strikethrough={p.status === 'verworfen'}>
-              {p.status === 'verworfen' ? '✗' : '✓'} {p.titel}{p.ergebnis ? `: ${p.ergebnis}` : ''}
+              {p.status === 'verworfen' ? '✗' : p.auto !== undefined ? '🤖' : '✓'} {p.titel}{p.ergebnis ? `: ${p.ergebnis}` : ''}
             </Text>
             <Text> </Text>
             <Button key={`auf-${p.id}`} label="Wieder öffnen" onPress={() => void wiederOeffnen($, p.id)} />
