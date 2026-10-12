@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Ausstehend, Punkt, Warnung } from '../types'
 import {
-  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
+  AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
@@ -841,9 +841,15 @@ export const register: Register = (on, options) => {
   })
 
   // Die ganze Sitzung zusammenfassen: eine Frage an das Hauptmodell ueber den eigenen
-  // Verlauf (aus dem Prompt-Cache), ohne Werkzeuge.
+  // Verlauf (aus dem Prompt-Cache), ohne Werkzeuge. Daneben schreibt es den Ueberblick neu -
+  // der von Haiku fortgeschriebene kann veraltet sein (claude-web: Knopf "Aktualisieren").
   on('command.run', { command: 'zusammenfassung' }, async $ => {
-    const r = await $.model.fork({ prompt: ZUSAMMENFASSUNG })
+    const [r, u] = await Promise.all([$.model.fork({ prompt: ZUSAMMENFASSUNG }), $.model.fork({ prompt: UEBERBLICK_NEU })])
+    const ueberblick = u.isAnswered ? ueberblickAus(u.text) : ''
+    if (ueberblick !== '') {
+      await update($, ueberblickA, () => ueberblick)
+      await speichern($)
+    }
     if (r.isAnswered) return { text: r.text }
     if (r.reason === 'nothing-to-fork') return { text: 'Noch nichts zusammenzufassen – die Sitzung hat noch keine Antwort.' }
     return { text: `Zusammenfassung nicht möglich (${r.reason}).` }

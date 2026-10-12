@@ -721,3 +721,19 @@ Was noch geklärt werden muss, je ein Punkt mit den Möglichkeiten.
 Ein Satz.
 
 Erfinde nichts; was du nicht sicher weißt, lass weg.`
+
+/**
+ * Auftrag für einen frischen Überblick (die Karte in claude-web, oben in /offen): aus dem
+ * ganzen Verlauf statt fortgeschrieben, damit ein veralteter Stand nicht weiterlebt.
+ * /zusammenfassung stellt ihn dem Hauptmodell; claude-web liest ihn für Sitzungen anderer
+ * Rechner aus dieser Datei und stellt ihn Haiku mit dem Verlauf.
+ */
+export const UEBERBLICK_NEU = `Schreibe einen kurzen ÜBERBLICK über die ganze Sitzung neu, damit der Nutzer den Faden behält – nicht fortschreiben, ein früherer Überblick kann veraltet sein. Steht unten ein VERLAUF, geht es um ihn. Nur Text, keine Werkzeuge. Deutsch, Markdown, höchstens 8 Zeilen, als Liste mit diesen fett gesetzten Anfängen, nur wenn es etwas dazu gibt: **Ziel:** worum es in der Sitzung geht · **Erledigt:** die wichtigsten Ergebnisse (knapp, neueste zuerst, Älteres zusammenfassen) · **Gerade:** woran zuletzt gearbeitet wurde · **Als Nächstes:** der nächste Schritt. Keine offenen Fragen aufzählen. Antworte nur mit der Liste, ohne Einleitung. Erfinde nichts.`
+
+/** Der Überblick aus einer Modellantwort: nur die Liste, ohne Codezaun und Einleitung; leer, wenn keine kam. */
+export function ueberblickAus(antwort: string): string {
+  const zeilen = String(antwort).replace(/```[a-z]*\n?/gi, '').split(/\r?\n/)
+  const erste = zeilen.findIndex(z => /^\s*[-*]\s+\*\*[^*]+\*\*/.test(z))
+  if (erste < 0) return ''
+  return zeilen.slice(erste).join('\n').trim().slice(0, 2000)
+}

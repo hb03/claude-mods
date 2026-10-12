@@ -117,12 +117,41 @@ for (const [fork, erwartet] of [
     grundlage(on)
     const gefragt: string[] = []
     on('model.fork', (_, e) => {
-      gefragt.push(String((e as { prompt?: string }).prompt))
-      return { value: fork } as never
+      const prompt = String((e as { prompt?: string }).prompt)
+      gefragt.push(prompt)
+      return { value: prompt.includes('ÜBERBLICK') ? { isAnswered: false, reason: 'api-error' } : fork } as never
     })
     const r = await $.command.run({ command: 'zusammenfassung', args: '' } as never)
     expect(String((r as { text?: string }).text)).toContain(erwartet)
-    expect(gefragt.length).toBe(1)
-    expect(gefragt[0]).toContain('Was du noch tun musst')
+    expect(gefragt.length).toBe(2)
+    expect(gefragt.some(p => p.includes('Was du noch tun musst'))).toBe(true)
   })
 }
+
+test('/zusammenfassung schreibt den Überblick neu – ein alter Stand bleibt nicht stehen', async ($, on) => {
+  grundlage(on)
+  mock.clock(on)
+  on('model.fork', (_, e) => {
+    const prompt = String((e as { prompt?: string }).prompt)
+    return { value: prompt.includes('ÜBERBLICK')
+      ? { isAnswered: true, text: 'Hier der Überblick:\n- **Ziel:** Knopf bauen\n- **Gerade:** Tests' }
+      : { isAnswered: true, text: '## Worum es ging\nKnopf.' } } as never
+  })
+  await $.command.run({ command: 'zusammenfassung', args: '' } as never)
+  const r = await $.command.run({ command: 'offen', args: '' } as never)
+  const text = String((r as { text?: string }).text)
+  expect(text).toContain('**Gerade:** Tests')
+  expect(text).not.toContain('Hier der Überblick')
+})
+
+test('/zusammenfassung ohne brauchbaren Überblick lässt den alten stehen', async ($, on) => {
+  grundlage(on)
+  mock.clock(on)
+  on('model.fork', (_, e) => {
+    const prompt = String((e as { prompt?: string }).prompt)
+    return { value: { isAnswered: true, text: prompt.includes('ÜBERBLICK') ? 'Keine Liste.' : '## Worum es ging\nKnopf.' } } as never
+  })
+  await $.command.run({ command: 'zusammenfassung', args: '' } as never)
+  const r = await $.command.run({ command: 'offen', args: '' } as never)
+  expect(String((r as { text?: string }).text)).not.toContain('Keine Liste')
+})

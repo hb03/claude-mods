@@ -5,7 +5,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { Auswertung } from '../hooks/logik'
 import {
   VERALTET_NACH, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies,
-  nummerieren, offene, ordnerName, statuszeile, verlaufsEintraege, zuruecknehmen, zusammenfuehren,
+  nummerieren, offene, ordnerName, statuszeile, ueberblickAus, verlaufsEintraege, zuruecknehmen, zusammenfuehren,
 } from '../hooks/logik'
 import type { Ausstehend, Punkt } from '../types'
 
@@ -637,4 +637,14 @@ test('ist die Eingabe belegt, bleibt sie unberührt; die Antworten gehen nach 5 
   await uhr.advance(1_000)
   expect(gesendet).toEqual([NACHRICHT])
   expect(box.text).toBe('Halb getippt')
+})
+
+describe('Überblick aus einer Modellantwort', () => {
+  test('nur die Liste, ohne Einleitung und Codezaun', async () => {
+    expect(ueberblickAus('Gern:\n```markdown\n- **Ziel:** A\n- **Gerade:** B\n```')).toBe('- **Ziel:** A\n- **Gerade:** B')
+  })
+  test('ohne Liste leer – dann bleibt der alte Überblick', async () => {
+    expect(ueberblickAus('Dazu kann ich nichts sagen.')).toBe('')
+    expect(ueberblickAus('- Ziel ohne Fettdruck')).toBe('')
+  })
 })
