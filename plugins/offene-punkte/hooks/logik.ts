@@ -555,19 +555,36 @@ export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[], ab
     return { ...rest, status: d.status, geaendert: d.geaendert, ...(d.ergebnis !== undefined ? { ergebnis: d.ergebnis } : {}) }
   })
   const bekannt = new Set(eigene.map(p => p.id))
-  const vergeben = new Set(liste.filter(p => p.status === 'offen').map(p => p.nr))
+  const vergeben = new Set(liste.map(p => p.nr).filter(n => n !== undefined))
   for (const d of datei) {
     if (bekannt.has(d.id)) continue
     const { ausstehend: _a, nr, ...rest } = d
     const p = { ...rest, sitzung: d.sitzung ?? 'unbekannt' }
     // Offen und hier schon vergeben (zwei Sitzungen zugleich): bekommt eine neue.
     if (nr !== undefined && (d.status !== 'offen' || !vergeben.has(nr))) {
-      if (d.status === 'offen') vergeben.add(nr)
+      vergeben.add(nr)
       liste.push({ ...p, nr })
     } else liste.push(p)
   }
 
-  return nummerieren(begrenzen(liste), ab)
+  return nummerieren(begrenzen(doppelteLoesen(liste)), ab)
+}
+
+/**
+ * Eine Nummer gehört genau einem Punkt. Tragen mehrere dieselbe (eine Sitzung hat ohne Zählerstand
+ * gezählt), behält sie der älteste; offene Nachzügler verlieren sie und bekommen eine neue,
+ * geschlossene behalten sie für den Verlauf.
+ */
+export function doppelteLoesen(liste: readonly Punkt[]): Punkt[] {
+  const erster = new Map<number, Punkt>()
+  for (const p of [...liste].sort((a, b) => a.erstellt - b.erstellt)) {
+    if (p.nr !== undefined && !erster.has(p.nr)) erster.set(p.nr, p)
+  }
+  return liste.map(p => {
+    if (p.nr === undefined || p.status !== 'offen' || erster.get(p.nr)?.id === p.id) return p
+    const { nr: _n, ...rest } = p
+    return rest
+  })
 }
 
 /** Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. */
@@ -682,7 +699,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
   }
 
   const ab = typeof roh.hoechsteNr === 'number' ? roh.hoechsteNr : 0
-  const liste = nummerieren(begrenzen(punkte), ab)
+  const liste = nummerieren(begrenzen(doppelteLoesen(punkte)), ab)
   return { punkte: liste, ueberblick: text(roh.ueberblick, 2000), hoechsteNr: Math.max(ab, hoechsteNr(liste)) }
 }
 

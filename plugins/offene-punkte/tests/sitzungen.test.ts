@@ -384,3 +384,45 @@ test('„erledigt: #N“ von Claude schließt sofort, /offen zeigt es mit 🤖, 
   expect(danach).not.toContain('Automatisch erledigt')
   expect(danach).toMatch(/1\. Seite neu laden/)
 })
+
+describe('Doppelte Nummern (0.11.1)', () => {
+  test('zwei Sitzungen zählen beide #1: die jüngere offene bekommt eine neue Nummer, geschlossene bleiben', async () => {
+    // Sitzung A (Datei): #1 lange geschlossen, #41 offen. Sitzung B hat ohne Zählerstand eine eigene #1 vergeben.
+    const datei = [punkt('alt', { nr: 1, titel: 'Alter Punkt', status: 'erledigt', erstellt: 10 }),
+      punkt('a41', { nr: 41, titel: 'Offen in A', erstellt: 20 })]
+    const b = [punkt('neu', { nr: 1, titel: 'Neu in B', erstellt: 30 })]
+    const liste = abgleichen(b, datei, 41)
+    const nr = (id: string) => liste.find(p => p.id === id)?.nr
+    expect(nr('neu')).toBe(42)
+    expect(nr('alt')).toBe(1)
+    expect(nr('a41')).toBe(41)
+    // Gegenprobe: ohne Kollision bleibt jede Nummer, wie sie ist
+    const ohne = abgleichen([punkt('x', { nr: 42, erstellt: 30 })], datei, 41)
+    expect(ohne.find(p => p.id === 'x')?.nr).toBe(42)
+  })
+
+  test('zwei offene mit gleicher Nummer: der ältere behält sie; auch beim Einlesen der Datei', async () => {
+    const roh = ablageText({ punkte: [punkt('frueh', { nr: 1, erstellt: 5 }), punkt('spaet', { nr: 1, erstellt: 9 })], ueberblick: '', hoechsteNr: 7 }, 1)
+    const gelesen = ablageLesen(roh)?.punkte ?? []
+    expect(gelesen.find(p => p.id === 'frueh')?.nr).toBe(1)
+    expect(gelesen.find(p => p.id === 'spaet')?.nr).toBe(8)
+  })
+})
+
+test('Sitzung ohne geladenen Zählerstand (wie claude -p) vergibt die nächste freie Nummer, nicht #1', async ($, on) => {
+  const uhr = mock.clock(on, { now: SONNTAG })
+  const dateien = new Map([[OFFEN, ablageText({
+    punkte: [punkt('alt', { nr: 1, titel: 'Alter Punkt', status: 'erledigt' }), punkt('a', { nr: 41, titel: 'Offen in A' })],
+    ueberblick: '', hoechsteNr: 41,
+  }, 1)]])
+  grundlage(on, dateien)
+  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ neu: [{ titel: 'Neu in B', frage: 'Soll ich?', optionen: [{ label: 'Ja', antwort: 'Ja.' }] }], erledigt: [] }),
+    usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) as never)
+  // Kein session.start: die Liste ist leer, der Zähler steht auf 0
+  const antwort = 'Soll ich das so machen? Ich brauche deine Freigabe dafür, bevor ich weitermache. '.repeat(6)
+  await $.turn.complete({ answer: antwort, reason: 'answer', durationMs: 10, isAborted: false, turnId: 't1' } as never)
+  await uhr.settle()
+  const d = ablageLesen(String(dateien.get(OFFEN)))
+  expect(d?.punkte.find(p => p.titel === 'Neu in B')?.nr).toBe(42)
+  expect(d?.punkte.find(p => p.id === 'alt')?.nr).toBe(1)
+})

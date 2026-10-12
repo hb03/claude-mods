@@ -85,6 +85,12 @@ async function zeigeStatus($: EngineInterface) {
 
 /** Ab hier zaehlen neue Nummern: hoechste je vergebene, mindestens die hoechste in der Liste. */
 async function nummernAb($: EngineInterface): Promise<number> {
+  // Auch den Stand der Datei: eine Sitzung, die sie nie geladen hat (claude -p, nach dem
+  // Neuladen der Mod), fing sonst bei 0 an und vergab eine Nummer ein zweites Mal (12.10.2026).
+  const o = await ablageOrt($)
+  const text = o === null ? '' : await $.fs.read(`${o.ordner}/offen.md`).then(t => String(t)).catch(() => '')
+  const dort = text === '' ? null : ablageLesen(text)
+  if (dort !== null) await zaehlerHeben($, Math.max(dort.hoechsteNr ?? 0, hoechsteNr(dort.punkte)))
   const [h, punkte] = await Promise.all([read($, hoechsteA), read($, punkteA)])
   return Math.max(h, hoechsteNr(punkte))
 }
