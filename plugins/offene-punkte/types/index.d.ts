@@ -59,6 +59,8 @@ export type Punkt = {
   stufe?: Stufe
   /** Die Argumente aus der Antwort, die für die Entscheidung zählen – für den Verlauf. */
   abwaegung?: string
+  /** Mehrere Antworten passen zusammen (keine Entweder-oder-Wahl): die Oberflaeche bietet Kaestchen. */
+  mehrfach?: boolean
   /** So viele Auswertungen in Folge ohne Bezug auf den Punkt; ab VERALTET_NACH gilt er als veraltet. */
   ohneBezug?: number
   status: Status

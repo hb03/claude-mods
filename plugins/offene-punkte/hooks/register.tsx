@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Ausstehend, Punkt, Warnung } from '../types'
+import type { Ausstehend, Option, Punkt, Warnung } from '../types'
 import {
   AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
@@ -663,6 +663,16 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     return beantwortet !== undefined
       ? `„${beantwortet.titel}“ ist schon beantwortet und geht mit den übrigen Antworten an Claude.`
       : `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
+  }
+  if (k.tun === 'optionen') {
+    // Mehrere Antworten zusammen (Punkte mit Mehrfachauswahl): Saetze hintereinander als eine Antwort
+    const gewaehlt = k.optionen.map(i => punkt.optionen[i])
+    if (gewaehlt.some(o => o === undefined)) return `„${punkt.titel}“ hat nicht alle diese Antworten – ${optionenText(punkt)}`
+    const os = gewaehlt as Option[]
+    const w: Wahl = { status: 'erledigt', label: os.map(o => o.label).join(' + '),
+                      text: os.map(o => o.antwort || o.label).join(' ') }
+    await antworten($, punkt, w)
+    return `„${punkt.titel}“: ${w.label}`
   }
   if (k.tun === 'option') {
     const o = punkt.optionen[k.option ?? -1]

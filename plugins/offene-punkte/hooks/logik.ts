@@ -22,6 +22,10 @@ In "abwaegung" stehen die Argumente aus der Antwort, die für die Entscheidung z
 
 Für jeden neuen Punkt: eine kurze Frage an den Nutzer und 1 bis 4 Antwortmöglichkeiten (bei einem Angebot reicht oft eine: das konkrete Ja; ablehnen kann der Nutzer immer mit "Nicht relevant"). Jede Möglichkeit hat ein kurzes "label" (höchstens 6 Wörter) und eine "antwort": der Satz, den der Nutzer dem Assistenten damit schickt (Ich-Form, konkret, z. B. "Ja, rolle es aus."). Braucht eine Antwort noch eine Eingabe des Nutzers (eigener Text, eine Zahl, eine Fehlermeldung), ende die "antwort" mit einem Doppelpunkt - sie wird dann nur vorbereitet, nicht abgeschickt.
 
+WER HANDELT, MUSS KLAR SEIN: In "antwort" spricht immer der Nutzer ("ich" = der Nutzer, "du" = der Assistent). Das "label" steht ohne "ich" und ohne "du", ohne Personalpronomen: entweder als Anweisung an den Assistenten ("Übernimm: prüfen", "Rolle aus") oder mit ausdrücklichem Handelnden ("Mache ich selbst" ist verboten, stattdessen "Nutzer prüft selbst"). Nie ein Label wie "Ich erledige das", bei dem offen bleibt, wer gemeint ist.
+
+MEHRFACHAUSWAHL: Schließen sich die Möglichkeiten nicht gegenseitig aus, sondern lassen sich sinnvoll kombinieren (z. B. welche von mehreren Erweiterungen, welche Projekte, welche Schritte), setze "mehrfach": true - der Nutzer kann dann mehrere ankreuzen, ihre "antwort"-Sätze gehen zusammen an den Assistenten. Formuliere jede "antwort" dann so, dass sie auch in Kombination mit den anderen trägt. Bei Entweder-oder-Entscheidungen (A oder B, Ja oder Nein) "mehrfach": false.
+
 Die Möglichkeiten müssen SPEZIFISCH sein, nicht allgemein:
 - Nenne die Dinge aus der Antwort beim Namen: Varianten, Dateien, Befehle, Zahlen, Ergebnisse. Schlecht: "Ja, so machen" / "Es gibt ein Problem". Gut: "Erst Lazy Loading, dann WebP" / "Mail liegt im Spam".
 - Bei einer Entscheidung: die echten Alternativen aus der Antwort, die Empfehlung des Assistenten zuerst; auch sinnvolle Kombinationen oder Abstufungen ("nur X", "X und Y").
@@ -39,7 +43,7 @@ Bereits bekannte offene Punkte stehen unten mit ID. Melde sie NICHT erneut als n
 - noch offen und die Antwort oder die Nachricht des Nutzers geht darauf ein, ohne dass sich etwas ändert: ID unter "erwaehnt".
 
 Antworte NUR mit JSON, ohne Erklärung, in genau dieser Form:
-{"neu":[{"titel":"2-5 Wörter","art":"aufgabe","stufe":"normal","frage":"Ein Satz?","info":"Warum offen, ein Satz.","abwaegung":"","anleitung":"1. ...\n\`\`\`bash\nbefehl\n\`\`\`","optionen":[{"label":"...","antwort":"..."}]}],"aktualisiert":[{"id":"...","anleitung":"..."}],"erledigt":["id"],"erwaehnt":["id"],"ueberblick":"- **Ziel:** ..."}
+{"neu":[{"titel":"2-5 Wörter","art":"aufgabe","stufe":"normal","frage":"Ein Satz?","info":"Warum offen, ein Satz.","abwaegung":"","anleitung":"1. ...\n\`\`\`bash\nbefehl\n\`\`\`","mehrfach":false,"optionen":[{"label":"...","antwort":"..."}]}],"aktualisiert":[{"id":"...","anleitung":"..."}],"erledigt":["id"],"erwaehnt":["id"],"ueberblick":"- **Ziel:** ..."}
 Gibt es nichts davon: {"neu":[],"aktualisiert":[],"erledigt":[],"erwaehnt":[],"ueberblick":"..."}`
 
 /** Der wechselnde Teil: bekannte Punkte, letzte Nachricht des Nutzers, die Antwort(en). */
@@ -122,6 +126,7 @@ export function lies(roh: string): Auswertung | null {
     neu.push({
       titel, art, stufe: stufe(p.stufe) ?? 'normal', frage, info: text(p.info, 300),
       abwaegung: text(p.abwaegung, 800), anleitung: text(p.anleitung, 4000), optionen,
+      ...(p.mehrfach === true && optionen.length > 1 ? { mehrfach: true } : {}),
     })
   }
 
@@ -329,6 +334,7 @@ export type Kommando =
   | { art: 'fehler'; text: string }
   | { art: 'neu'; text: string }
   | { art: 'punkt'; nummer: number; tun: 'erledigt' | 'weg' | 'spaeter' | 'aktuell' | 'option'; option?: number; bis?: Ruhezeit }
+  | { art: 'punkt'; nummer: number; tun: 'optionen'; optionen: number[] }
 
 const ZEITWORT: Record<string, Ruhezeit> = { sitzung: 'sitzung', morgen: 'morgen', drei: 'drei', woche: 'woche' }
 
@@ -341,6 +347,12 @@ export function kommando(args: string): Kommando {
   }
   const a = args.trim().toLowerCase()
   if (a === '') return { art: 'liste' }
+  // Mehrere Antworten: "3 a c" oder "3 a,c" (bei Punkten mit Mehrfachauswahl)
+  const mehrere = /^(\d+)\s+([a-d](?:[\s,]+[a-d])+)$/.exec(a)
+  if (mehrere !== null) {
+    const optionen = [...new Set((mehrere[2] ?? '').split(/[\s,]+/).map(b => b.charCodeAt(0) - 97))].sort((x, y) => x - y)
+    return { art: 'punkt', nummer: Number(mehrere[1]), tun: 'optionen', optionen }
+  }
   if (a === 'leeren') return { art: 'leeren' }
   if (a === 'senden') return { art: 'senden' }
   const m = /^(\d+)\s+(\S+)(?:\s+(\S+))?$/.exec(a)
@@ -361,7 +373,7 @@ export function kommando(args: string): Kommando {
   return { art: 'fehler', text: HILFE }
 }
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen) · /offen neu <Text> · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen neu <Text> · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
 
 /** Ein Punkt, den der Nutzer selbst notiert (/offen neu): Titel aus den ersten Wörtern, ohne feste Antworten. */
 export function notiz(text: string, id: string, jetzt: number, sitzung: string): Punkt {
@@ -539,7 +551,7 @@ export const uhrzeit = (ms: number): string => {
   return `${zweistellig(d.getHours())}:${zweistellig(d.getMinutes())}`
 }
 
-const optionenText = (p: Punkt) => p.optionen
+const optionenText = (p: Punkt) => (p.mehrfach === true ? '   (mehrere möglich)\n' : '') + p.optionen
   .map((o, i) => `   ${String.fromCharCode(97 + i)}) ${o.label}${o.antwort !== '' ? ` – „${o.antwort}“` : ''}`)
   .join('\n')
 

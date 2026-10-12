@@ -46,6 +46,19 @@ describe('Antwort des Modells lesen', () => {
     expect(a?.neu[0]?.optionen.length).toBe(4)
   })
 
+  test('Mehrfachauswahl: nur bei true und mehr als einer Option', async () => {
+    const opt = (n: number) => Array.from({ length: n }, (_, i) => ({ label: `O${i}`, antwort: `A${i}.` }))
+    const a = lies(JSON.stringify({
+      neu: [
+        { titel: 'Mehrere', frage: 'Welche?', mehrfach: true, optionen: opt(3) },
+        { titel: 'Eine', frage: 'Ja?', mehrfach: true, optionen: opt(1) },
+        { titel: 'Text statt Wahrheitswert', frage: 'Was?', mehrfach: 'ja', optionen: opt(2) },
+        { titel: 'Ohne', frage: 'Oder?', optionen: opt(2) },
+      ],
+    }))
+    expect(a?.neu.map(p => p.mehrfach ?? false)).toEqual([true, false, false, false])
+  })
+
   test('kein JSON ergibt null', async () => {
     expect(lies('Keine offenen Punkte.')).toBeNull()
     expect(lies('{kaputt')).toBeNull()
