@@ -1,9 +1,16 @@
 {
   "name": "offene-punkte",
-  "version": "0.13.0",
-  "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung, blockierende zuerst – und stellt sie über der Eingabe, immer auch mit eigener Antwort. Die Liste geht je Projekt in die nächste Sitzung mit, Entscheidungen landen mit Gründen in einem Tagesverlauf. /offen zeigt und bedient alles, /zusammenfassung fasst die Sitzung zusammen und schreibt den Überblick neu. Claude bekommt die offene Liste still mit und schließt Erledigtes und Überholtes selbst („erledigt: #N“, „überholt: #N“); Veraltetes und nicht aufgegriffene Angebote schließen sich ohne Frage. Beim Start gleicht es Punkte, die seit sechs Stunden liegen, mit Commits und Entscheidungen ab. Auswertung über Haiku.",
+  "version": "0.14.0",
+  "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung, blockierende zuerst – und stellt sie über der Eingabe, immer auch mit eigener Antwort. Die Liste geht je Projekt in die nächste Sitzung mit, Entscheidungen landen mit Gründen in einem Tagesverlauf. /offen zeigt und bedient alles, /zusammenfassung fasst die Sitzung zusammen und schreibt den Überblick neu. Claude bekommt die offene Liste still mit und schließt Erledigtes und Überholtes selbst („erledigt: #N“, „überholt: #N“); Veraltetes und nicht aufgegriffene Angebote schließen sich ohne Frage. Beim Start gleicht es Punkte, die seit sechs Stunden liegen, mit Commits und Entscheidungen ab. Claude trägt neue Punkte selbst über ein Werkzeug ein; Haiku fasst nur nach, wenn eine Antwort fragt und nichts eingetragen wurde (einstellbar: Haiku liest jede Antwort).",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "auswertung": {
+      "type": "string",
+      "title": "Wer offene Punkte erkennt",
+      "description": "claude: Claude trägt sie selbst mit dem Werkzeug ein, Haiku fasst nur nach, wenn eine Antwort mit einer Frage endet und nichts eingetragen wurde (spart Tokens); haiku: Haiku liest jede Antwort",
+      "options": ["claude", "haiku"],
+      "default": "claude"
+    },
     "modell": {
       "type": "string",
       "title": "Modell für die Auswertung",

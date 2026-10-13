@@ -7,7 +7,8 @@ import {
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
-  HINWEIS_CLAUDE, autoErledigt, schlussMarken, perMarkeSchliessen,
+  HINWEIS_CLAUDE, HINWEIS_WERKZEUG, autoErledigt, schlussMarken, perMarkeSchliessen,
+  WERKZEUG, WERKZEUG_BESCHREIBUNG, WERKZEUG_SCHEMA, altern, nachfassen, werkzeugLesen,
   LISTE_ERNEUT_NACH, listeFuerClaude, veraltetSchliessen, zuletztGeschlossen,
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
 } from './logik'
@@ -53,6 +54,12 @@ const BEFEHL = '__befehl:'
 let modell = 'haiku'
 let mindestLaenge = 400
 let fragenAnzeigen = true
+// "claude": Claude legt Punkte mit dem Werkzeug selbst an, Haiku fasst nur nach, wenn er es vergessen
+// hat; "haiku": Haiku liest jede Antwort (wie bis 0.13).
+let auswertung: 'claude' | 'haiku' = 'claude'
+// Hat Claude das Werkzeug in der laufenden Antwort benutzt? Dann braucht es kein Nachfassen.
+let werkzeugBenutzt = false
+const WERKZEUG_VOLL = `mcp__offene-punkte__${WERKZEUG}`
 // Die letzte Nachricht des Nutzers - sagt Haiku, was er gerade schon beantwortet hat.
 let letzteEingabe = ''
 // Laeuft schon eine Auswertung, sammeln sich die naechsten Antworten hier (nie zwei Auswertungen gleichzeitig).
@@ -330,7 +337,9 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
     }
     if (a.ueberblick !== '') await update($, ueberblickA, () => a.ueberblick)
     const ab = await nummernAb($)
-    const geschlossen = await aendere($, alt => zusammenfuehren(alt, a, jetzt, neueId, ab))
+    // Bei "claude" altert altern() je Antwort; das Nachfassen soll nicht ein zweites Mal zaehlen.
+    const mitBezug = auswertung === 'claude' ? { ...a, erwaehnt: [...a.erwaehnt, ...vorher.map(p => p.id)] } : a
+    const geschlossen = await aendere($, alt => zusammenfuehren(alt, mitBezug, jetzt, neueId, ab))
 
     const bekannt = new Set(vorher.map(p => p.id))
     const neu = offene(await read($, punkteA)).filter(p => !bekannt.has(p.id)).length
@@ -768,6 +777,8 @@ export const register: Register = (on, options) => {
   modell = String(options.modell ?? 'haiku') || 'haiku'
   mindestLaenge = Number(options.mindestLaenge ?? 400)
   fragenAnzeigen = options.fragenAnzeigen !== false
+  auswertung = options.auswertung === 'haiku' ? 'haiku' : 'claude'
+  werkzeugBenutzt = false
   warteschlange = []
   laeuft = false
   ort = null
@@ -786,6 +797,10 @@ export const register: Register = (on, options) => {
       name: 'zusammenfassung',
       description: 'Fasst die ganze Sitzung zusammen: Ziel, Erledigtes, was du noch tun musst (mit Befehlen), offene Entscheidungen',
     })
+    if (auswertung === 'claude') {
+      await $.tool.register({ name: WERKZEUG, description: WERKZEUG_BESCHREIBUNG, inputSchema: WERKZEUG_SCHEMA, isDeferred: false })
+        .catch(fehler => $.ui.log(`offene-punkte: Werkzeug nicht registriert (${String(fehler)})`))
+    }
     await update($, prueftA, () => false)
     sitzung = await $.session.id().catch(() => '')
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
@@ -895,7 +910,38 @@ export const register: Register = (on, options) => {
   // Claude schließt selbst: „erledigt: #3“ in der Antwort schließt den Punkt sofort (auch bei kurzen Antworten).
   on('prompt.context', async ($, e, next) => {
     const r = await next(e)
-    return { ...r, blocks: [...r.blocks, { name: 'offenePunkte', text: HINWEIS_CLAUDE }] }
+    return { ...r, blocks: [...r.blocks, { name: 'offenePunkte', text: auswertung === 'claude' ? HINWEIS_WERKZEUG : HINWEIS_CLAUDE }] }
+  })
+
+  // Claude legt Punkte selbst an und schliesst sie; die Antwort nennt die vergebenen Nummern.
+  on('tool.call', { tool: WERKZEUG_VOLL }, async ($, e) => {
+    werkzeugBenutzt = true
+    const { neu, marken } = werkzeugLesen(e.input)
+    if (neu.length === 0 && marken.length === 0) return { deny: 'Nichts übergeben: "neu" (Punkte mit titel, art, frage, optionen) oder "schliessen" (nr).' }
+    const [jetzt, ab, vorher] = await Promise.all([$.clock.now(), nummernAb($), read($, punkteA)])
+    const vergeben = new Set(vorher.map(p => p.id))
+    let i = 0
+    const neueId = () => {
+      let id: string
+      do id = `c${jetzt.toString(36)}${(i++).toString(36)}`
+      while (vergeben.has(id))
+      vergeben.add(id)
+      return id
+    }
+    // Erwaehnt sind hier alle: ein Aufruf des Werkzeugs laesst keinen Punkt altern.
+    const alle = offene(vorher).map(p => p.id)
+    const zu = await aendere($, l => perMarkeSchliessen(
+      zusammenfuehren(l, { neu, aktualisiert: [], erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt))
+    const bekannt = new Set(vorher.map(p => p.id))
+    const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
+    const teile = [
+      angelegt.length > 0 ? `angelegt: ${angelegt.map(p => `#${p.nr ?? '?'} ${p.titel}`).join(', ')}` : '',
+      neu.length > angelegt.length ? `${neu.length - angelegt.length} schon vorhanden (gleicher Titel offen oder kürzlich geschlossen)` : '',
+      zu.length > 0 ? `geschlossen: ${zu.map(p => `#${p.nr ?? '?'}`).join(', ')}` : '',
+      marken.length > zu.length ? `${marken.length - zu.length} Nummer(n) nicht offen` : '',
+    ].filter(t => t !== '')
+    if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
+    return { result: `Offene Punkte: ${teile.join('; ') || 'nichts geändert'}. Der Nutzer bekommt neue Punkte über der Eingabe als Auswahl gestellt.` }
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -910,7 +956,22 @@ export const register: Register = (on, options) => {
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }
-    if (e.agentId === undefined && e.reason === 'answer' && auswertenNoetig(e.answer, mindestLaenge)) {
+    const benutzt = werkzeugBenutzt
+    if (e.agentId === undefined) werkzeugBenutzt = false
+    if (auswertung === 'claude' && e.agentId === undefined && e.reason === 'answer') {
+      const antwort = e.answer
+      const eingabe = letzteEingabe
+      $.clock.after(0, () => {
+        void (async () => {
+          const jetzt = await $.clock.now()
+          const alt = await aendere($, l => altern(l, antwort, jetzt))
+          if (alt.length > 0) $.ui.toast(alt.map(p => `🤖 „${p.titel}“ geschlossen (${p.auto?.grund})`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
+          // Claude hat gefragt, aber nichts eingetragen: Haiku fasst nach.
+          if (!benutzt && nachfassen(antwort)) await auswerten($, [antwort], eingabe)
+        })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+      })
+    }
+    if (auswertung === 'haiku' && e.agentId === undefined && e.reason === 'answer' && auswertenNoetig(e.answer, mindestLaenge)) {
       const antwort = e.answer
       const eingabe = letzteEingabe
       // Ausserhalb dieses Hooks: die Auswertung soll das Ende der Antwort nicht aufhalten.

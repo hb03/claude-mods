@@ -17,8 +17,8 @@
     {
       "name": "offene-punkte",
       "source": "./plugins/offene-punkte",
-      "description": "Mod: erkennt nach jeder Antwort offene Punkte (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; führt einen Überblick über die Sitzung. /offen, /zusammenfassung. Claude bekommt die Liste mit und schließt Erledigtes und Überholtes selbst. Auswertung über Haiku.",
-      "version": "0.13.0",
+      "description": "Mod: erkennt nach jeder Antwort offene Punkte (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; führt einen Überblick über die Sitzung. /offen, /zusammenfassung. Claude trägt Punkte selbst ein und schließt Erledigtes und Überholtes; Haiku fasst nur nach.",
+      "version": "0.14.0",
       "category": "mod"
     },
     {

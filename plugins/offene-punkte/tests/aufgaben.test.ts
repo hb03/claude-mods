@@ -62,7 +62,7 @@ describe('Lesen', () => {
   })
 })
 
-test('Aufgabe zeigt ihre Anleitung über der Eingabe; der Überblick geht in die nächste Auswertung', async ($, on) => {
+test('Aufgabe zeigt ihre Anleitung über der Eingabe; der Überblick geht in die nächste Auswertung', { options: { auswertung: 'haiku' } }, async ($, on) => {
   const uhr = mock.clock(on, { now: 1_800_000_000_000 })
   grundlage(on)
   const anfragen: string[] = []
@@ -96,7 +96,7 @@ test('Aufgabe zeigt ihre Anleitung über der Eingabe; der Überblick geht in die
   expect(String((offen as { text?: string }).text)).toContain('refreshInterval')
 })
 
-test('Entscheidung ohne Anleitung zeigt keinen Markdown-Block', async ($, on) => {
+test('Entscheidung ohne Anleitung zeigt keinen Markdown-Block', { options: { auswertung: 'haiku' } }, async ($, on) => {
   const uhr = mock.clock(on)
   grundlage(on)
   on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ neu: [{ titel: 'Ausrollen', art: 'entscheidung', frage: 'Ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja.' }] }], erledigt: [] }) } }) as never)

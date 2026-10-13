@@ -190,6 +190,9 @@ export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
 /** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
 export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern; die aktuelle Liste kommt als Kontext „Offene Punkte“ mit seinen Nachrichten, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt dort durch deine Arbeit oder das Gespräch erledigt oder entschieden, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“); ist er hinfällig (anderer Weg, Angebot nicht aufgegriffen, betrifft nichts mehr), „überholt: #<Nr> – kurzer Grund“. Der Punkt schließt sich dann sofort und lässt sich per /offen wieder öffnen. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
+/** Hinweis bei Auswertung „claude“: Claude legt Punkte selbst an, statt dass Haiku jede Antwort liest. */
+export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
+
 /** So viele Nachrichten des Nutzers lang gilt die Liste bei Claude als bekannt, dann kommt sie wieder (Kontext kann komprimiert sein). */
 export const LISTE_ERNEUT_NACH = 8
 
@@ -389,6 +392,88 @@ export function auswerten(antwort: string, mindestLaenge: number): boolean {
   const t = antwort.trim()
 
   return t.length >= 10 && (FRAGE_AM_ENDE.test(t) || BITTE.test(t))
+}
+
+/**
+ * Auswertung „claude“: Haiku springt nur ein, wenn Claude das Werkzeug in dieser Antwort nicht
+ * benutzt hat und ihr Schluss nach etwas fragt oder um etwas bittet - dort stehen die Fragen.
+ */
+export function nachfassen(antwort: string): boolean {
+  const schluss = antwort.trim().slice(-1500)
+  return schluss.length >= 10 && (FRAGE_AM_ENDE.test(schluss) || BITTE.test(schluss))
+}
+
+/**
+ * Auswertung „claude“ (kein Haiku je Antwort): eine Antwort, die einen offenen Punkt nicht
+ * erwähnt (weder „#Nr“ noch Titel), zählt ihn einen Schritt Richtung veraltet.
+ */
+export function altern(liste: readonly Punkt[], antwort: string, jetzt: number): Punkt[] {
+  const t = schluessel(antwort)
+  const gealtert = liste.map(p => {
+    if (p.status !== 'offen' || p.ausstehend !== undefined || p.vonNutzer === true) return p
+    const erwaehnt = (p.nr !== undefined && new RegExp(`#${p.nr}(?!\\d)`).test(antwort)) || t.includes(schluessel(p.titel))
+    return { ...p, ohneBezug: erwaehnt ? 0 : (p.ohneBezug ?? 0) + 1 }
+  })
+  return veraltetSchliessen(gealtert, jetzt)
+}
+
+/** Name des Werkzeugs, mit dem Claude selbst Punkte anlegt und schließt (gelistet als mcp__offene-punkte__punkte). */
+export const WERKZEUG = 'punkte'
+
+export const WERKZEUG_BESCHREIBUNG = 'Führt die offenen Punkte des Nutzers (Plugin offene-punkte): Fragen, Freigaben und Aufgaben, die er beantworten oder erledigen muss; sie werden ihm über der Eingabe als Auswahl gestellt. Rufe es in derselben Antwort auf, in der du etwas vom Nutzer brauchst, das leicht untergeht (Entscheidung zwischen Varianten, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt) - nicht für Rückfragen, die er sowieso gleich beantwortet, nicht für Dinge, die du selbst prüfen kannst, nicht für eine Frage, die du schon mit AskUserQuestion stellst. Mit "schliessen" meldest du Punkte, die erledigt, entschieden oder hinfällig sind. Optionen: kurze, spezifische Labels (höchstens 6 Wörter, ohne ich/du) und je eine "antwort", die genau so als Nachricht des Nutzers an dich geht (Ich-Form aus Sicht des Nutzers; endet sie mit ":", wird sie nur in die Eingabe gelegt, damit er ergänzt). Nicht anbieten: Später, Schon erledigt, Nicht relevant, eigene Antwort - die gibt es immer. Bei einer Aufgabe gehört in "anleitung" alles zum Ausführen (Schritte, Befehle in ```bash-Blöcken, Pfade), damit er nicht im Verlauf suchen muss.'
+
+export const WERKZEUG_SCHEMA = {
+  type: 'object',
+  properties: {
+    neu: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          titel: { type: 'string', description: '2-5 Wörter' },
+          art: { type: 'string', enum: ['entscheidung', 'aufgabe'] },
+          stufe: { type: 'string', enum: ['blockiert', 'normal', 'angebot'] },
+          frage: { type: 'string', description: 'ein Satz an den Nutzer' },
+          info: { type: 'string', description: 'warum offen, ein Satz' },
+          abwaegung: { type: 'string', description: 'Gründe und Empfehlung, höchstens drei Sätze' },
+          anleitung: { type: 'string' },
+          mehrfach: { type: 'boolean', description: 'Optionen lassen sich kombinieren' },
+          optionen: {
+            type: 'array',
+            items: { type: 'object', properties: { label: { type: 'string' }, antwort: { type: 'string' } }, required: ['label', 'antwort'] },
+          },
+        },
+        required: ['titel', 'art', 'frage', 'optionen'],
+      },
+    },
+    schliessen: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          nr: { type: 'number' },
+          ueberholt: { type: 'boolean', description: 'hinfällig statt erledigt' },
+          grund: { type: 'string', description: 'wenige Wörter' },
+        },
+        required: ['nr'],
+      },
+    },
+  },
+} as const
+
+/** Liest den Aufruf des Werkzeugs: neue Punkte wie aus der Auswertung, zu schließende als Marken. */
+export function werkzeugLesen(eingabe: unknown): { neu: Auswertung['neu']; marken: Marke[] } {
+  const e = typeof eingabe === 'object' && eingabe !== null ? eingabe as Record<string, unknown> : {}
+  const neu = lies(JSON.stringify({ neu: Array.isArray(e.neu) ? e.neu : [] }))?.neu ?? []
+  const marken: Marke[] = []
+  for (const x of Array.isArray(e.schliessen) ? e.schliessen : []) {
+    if (typeof x !== 'object' || x === null) continue
+    const m = x as Record<string, unknown>
+    const nr = typeof m.nr === 'number' ? m.nr : typeof m.nr === 'string' ? Number(m.nr.replace('#', '')) : NaN
+    if (!Number.isInteger(nr)) continue
+    marken.push({ nr, ueberholt: m.ueberholt === true, grund: text(m.grund, 120) })
+  }
+  return { neu, marken }
 }
 
 /** Sprachen, deren Codeblöcke als Shell-Befehl gelten (leer: ohne Angabe). */
