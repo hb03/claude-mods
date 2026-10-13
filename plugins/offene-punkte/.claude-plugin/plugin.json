@@ -1,7 +1,7 @@
 {
   "name": "offene-punkte",
-  "version": "0.11.2",
-  "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung, blockierende zuerst – und stellt sie über der Eingabe, immer auch mit eigener Antwort. Die Liste geht je Projekt in die nächste Sitzung mit, Entscheidungen landen mit Gründen in einem Tagesverlauf. /offen zeigt und bedient alles, /zusammenfassung fasst die Sitzung zusammen und schreibt den Überblick neu. Auswertung über Haiku.",
+  "version": "0.12.0",
+  "description": "Erkennt nach jeder Antwort offene Punkte – Entscheidungen und Aufgaben mit Schritt-für-Schritt-Anleitung, blockierende zuerst – und stellt sie über der Eingabe, immer auch mit eigener Antwort. Die Liste geht je Projekt in die nächste Sitzung mit, Entscheidungen landen mit Gründen in einem Tagesverlauf. /offen zeigt und bedient alles, /zusammenfassung fasst die Sitzung zusammen und schreibt den Überblick neu. Beim Start gleicht es Punkte, die seit einem Tag liegen, mit den Commits ab und schließt Erledigtes und Überholtes. Auswertung über Haiku.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "modell": {

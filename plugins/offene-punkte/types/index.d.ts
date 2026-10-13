@@ -78,6 +78,8 @@ export type Punkt = {
   sitzung?: string
   /** Wann der Punkt zuletzt geschlossen oder wieder geöffnet wurde (für den Abgleich zwischen Sitzungen). */
   geaendert?: number
+  /** Wann der Startabgleich den Punkt zuletzt geprüft und offen gelassen hat (erst nach ABGLEICH_NACH_MS wieder). */
+  geprueft?: number
   /** Zurückgelegt: wird bis dahin nicht gefragt (bis: Zeitpunkt; sitzung: bis zur nächsten Sitzung). */
   ruht?: Ruhe
   /** Vom Nutzer selbst angelegt (/offen neu): die Auswertung schließt, ändert und altert ihn nicht. */

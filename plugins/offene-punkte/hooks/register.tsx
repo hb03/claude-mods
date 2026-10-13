@@ -8,6 +8,7 @@ import {
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
   ERKANNT, HINWEIS_CLAUDE, autoErledigt, erledigtMarken, perMarkeSchliessen,
+  ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, liesAbgleich,
 } from './logik'
 import type { Ruhezeit, Sicht, Teil } from './logik'
 
@@ -191,6 +192,41 @@ async function laden($: EngineInterface) {
   await zeigeStatus($)
   const n = fragbar(await read($, punkteA), await sicht($)).length
   if (n > 0) $.ui.toast(n === 1 ? '1 offener Punkt aus der letzten Sitzung übernommen · /offen' : `${n} offene Punkte aus der letzten Sitzung übernommen · /offen`)
+}
+
+/**
+ * Zum Start: offene Punkte, die seit einem Tag niemand angefasst hat, gleicht ein kleines Modell
+ * mit den Commits seither und dem Ueberblick ab. Was belegt erledigt oder ueberholt ist, schliesst
+ * sich (mit Grund, per /offen wieder zu oeffnen); der Rest gilt fuer einen Tag als geprueft.
+ */
+async function startAbgleich($: EngineInterface) {
+  const jetzt = await $.clock.now()
+  const kandidaten = abgleichKandidaten(await read($, punkteA), jetzt)
+  if (kandidaten.length === 0) return
+  const seit = Math.floor(Math.min(...kandidaten.map(p => p.erstellt)) / 1000)
+  const wurzel = (await $.session.root()).replace(/[\\/]+$/, '')
+  const log = await $.process.run(['git', '-C', wurzel, 'log', `--since=@${seit}`, '-n', '80', '--date=format:%d.%m. %H:%M', '--format=%h %ad %s'])
+    .catch(() => null)
+  const commits = log !== null && log.exitCode === 0 ? log.stdout : ''
+  const r = await $.model.complete({
+    model: modell,
+    system: [{ text: ABGLEICH_AUFTRAG, cache: true }],
+    prompt: abgleichAnfrage(kandidaten, { commits, ueberblick: await read($, ueberblickA) }),
+    maxTokens: 1500,
+    timeoutMs: 45_000,
+  })
+  if (!r.isAnswered) {
+    $.ui.log(`offene-punkte: kein Startabgleich (${r.reason})`)
+    return
+  }
+  const ergebnisse = liesAbgleich(r.text)
+  if (ergebnisse === null) {
+    $.ui.log('offene-punkte: Antwort des Startabgleichs war kein lesbares JSON')
+    return
+  }
+  const nrn = kandidaten.map(p => p.nr ?? -1)
+  const zu = await aendere($, l => abgleichAnwenden(l, nrn, ergebnisse, jetzt))
+  if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ beim Start abgeglichen`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 8000 })
 }
 
 /**
@@ -740,6 +776,9 @@ export const register: Register = (on, options) => {
     const ab = await nummernAb($)
     await update($, punkteA, l => nummerieren(l, ab))
     await zeigeStatus($)
+    $.clock.after(0, () => {
+      void startAbgleich($).catch(fehler => $.ui.log(`offene-punkte: Startabgleich fehlgeschlagen (${String(fehler)})`))
+    })
     // Nach einem Neuladen des Plugins: was gesammelt wartete, wartet weiter (der Zeitgeber ist neu).
     await weiter($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     return next(e)
