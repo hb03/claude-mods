@@ -22,11 +22,11 @@ const punkt = (nr: number, extra: Partial<Punkt> = {}): Punkt => ({
 })
 
 describe('Startabgleich: wer drankommt', () => {
-  test('nur offene, unbeantwortete Punkte, die seit einem Tag niemand geprueft hat', () => {
+  test('nur offene, unbeantwortete Punkte, die seit ABGLEICH_NACH_MS niemand geprueft hat', () => {
     const liste = [
       punkt(1),
-      punkt(2, { erstellt: JETZT - TAG / 2 }),
-      punkt(3, { geprueft: JETZT - TAG / 2 }),
+      punkt(2, { erstellt: JETZT - ABGLEICH_NACH_MS / 2 }),
+      punkt(3, { geprueft: JETZT - ABGLEICH_NACH_MS / 2 }),
       punkt(4, { status: 'erledigt' }),
       punkt(5, { vonNutzer: true }),
       punkt(6, { ausstehend: { status: 'erledigt', ergebnis: 'Ja', text: 'Ja.', wo: 'sammlung' } }),
@@ -74,6 +74,6 @@ describe('Startabgleich: anwenden', () => {
     const neu = abgleichAnwenden([punkt(1)], [1], [], JETZT)
     const a = ablageLesen(ablageText({ punkte: neu, ueberblick: '', hoechsteNr: 1 }, JETZT))
     expect(a?.punkte[0]?.geprueft).toBe(JETZT)
-    expect(abgleichKandidaten(a?.punkte ?? [], JETZT + TAG / 2)).toEqual([])
+    expect(abgleichKandidaten(a?.punkte ?? [], JETZT + ABGLEICH_NACH_MS / 2)).toEqual([])
   })
 })

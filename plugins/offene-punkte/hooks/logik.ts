@@ -4,8 +4,10 @@ import type { Art, Option, Punkt, Ruhe, Stufe, Warnung } from '../types'
 export const MAX_PUNKTE = 30
 /** So viel der Antwort bekommt Haiku (der Schluss zählt am meisten). */
 export const MAX_ANTWORT = 12_000
-/** Nach so vielen Auswertungen ohne Bezug fragt der Mod, ob ein Punkt noch aktuell ist. */
+/** Nach so vielen Auswertungen ohne Bezug gilt ein Punkt als veraltet und schließt sich (wieder zu öffnen). */
 export const VERALTET_NACH = 10
+/** Ein Angebot, auf das so viele Antworten lang niemand eingeht, gilt als stilles Nein. */
+export const ANGEBOT_VERFALL = 4
 
 /** Fester Teil des Auftrags - steht vorn, damit der Prompt-Cache ihn hält. */
 export const AUFTRAG = `Du liest die letzte Antwort eines Coding-Assistenten an seinen Nutzer und findest OFFENE PUNKTE: Dinge, die noch nicht erledigt sind und eine Entscheidung, Freigabe, Zuarbeit oder Prüfung des Nutzers brauchen - besonders solche, die leicht untergehen.
@@ -44,7 +46,9 @@ Bereits bekannte offene Punkte stehen unten mit ID. Melde sie NICHT erneut als n
   · die neue Antwort oder die letzte Nachricht des Nutzers ihn erledigt (getan, entschieden, beantwortet);
   · er ÜBERHOLT ist: das Gespräch hat ihn hinfällig gemacht (anderer Weg gewählt, Thema abgeschlossen, Frage durch spätere Arbeit beantwortet, der Assistent hat es inzwischen selbst geprüft);
   · STILLES OK: Es war eine Prüfbitte an den Nutzer (ansehen, testen, neu laden, ausprobieren, Rückmeldung ob es klappt) und die letzte Nachricht des Nutzers macht mit etwas anderem weiter, ohne einen Fehler oder ein Problem zu melden. Entscheidungen, Freigaben und Daten, die der Nutzer liefern muss, schließt das stille OK NICHT.
+  · STILLES NEIN: Es war ein Angebot des Assistenten ("soll ich noch ...?", "könnte ich auch ...") und der Nutzer geht in seiner letzten Nachricht nicht darauf ein, sondern macht mit etwas anderem weiter.
   Im Zweifel offen lassen.
+- Die KÜRZLICH GESCHLOSSENEN Punkte (unten) sind beantwortet oder erledigt: melde sie und Fragen mit demselben Inhalt NICHT erneut als neu, auch nicht mit anderen Worten - außer die Antwort sagt ausdrücklich, dass es wieder offen ist.
 - noch offen, aber die Antwort bringt Neues dazu (genauere Anleitung, geänderte Frage oder Möglichkeiten, andere Stufe): unter "aktualisiert" mit seiner ID und NUR den Feldern, die sich ändern;
 - noch offen und die Antwort oder die Nachricht des Nutzers geht darauf ein, ohne dass sich etwas ändert: ID unter "erwaehnt".
 
@@ -53,13 +57,20 @@ Antworte NUR mit JSON, ohne Erklärung, in genau dieser Form:
 Gibt es nichts davon: {"neu":[],"aktualisiert":[],"erledigt":[],"erwaehnt":[],"ueberblick":"..."}`
 
 /** Der wechselnde Teil: bekannte Punkte, letzte Nachricht des Nutzers, die Antwort(en). */
-export function anfrage(antworten: string | readonly string[], letzteEingabe: string, offene: readonly Punkt[], ueberblick = ''): string {
+export function anfrage(antworten: string | readonly string[], letzteEingabe: string, offene: readonly Punkt[], ueberblick = '', geschlossen: readonly Punkt[] = []): string {
   const bekannt = offene.length === 0
     ? '(keine)'
-    : offene.map(p => `- ${p.id} (${p.art}): ${p.titel} - ${p.frage}${p.info !== '' ? ` [${p.info}]` : ''}`).join('\n')
+    : offene.map(p => `- ${p.id} (${p.art}${p.stufe === 'angebot' ? ', Angebot' : ''}): ${p.titel} - ${p.frage}${p.info !== '' ? ` [${p.info}]` : ''}`).join('\n')
+  const zu = geschlossen.length === 0
+    ? '(keine)'
+    : geschlossen.map(p => `- ${p.titel} - ${p.frage} => ${(p.ergebnis ?? p.status).slice(0, 160)}`).join('\n')
 
-  return `BISHERIGER ÜBERBLICK:\n${ueberblick || '(noch keiner)'}\n\nBEKANNTE OFFENE PUNKTE:\n${bekannt}\n\nLETZTE NACHRICHT DES NUTZERS:\n${letzteEingabe.slice(0, 2000) || '(keine)'}\n\n${antwortTeil(antworten)}`
+  return `BISHERIGER ÜBERBLICK:\n${ueberblick || '(noch keiner)'}\n\nBEKANNTE OFFENE PUNKTE:\n${bekannt}\n\nKÜRZLICH GESCHLOSSEN:\n${zu}\n\nLETZTE NACHRICHT DES NUTZERS:\n${letzteEingabe.slice(0, 2000) || '(keine)'}\n\n${antwortTeil(antworten)}`
 }
+
+/** Die zuletzt geschlossenen Punkte (neueste zuerst), damit Haiku sie nicht neu anlegt. */
+export const zuletztGeschlossen = (punkte: readonly Punkt[], n = 12): Punkt[] =>
+  punkte.filter(p => p.status !== 'offen').sort((a, b) => (b.geaendert ?? b.erstellt) - (a.geaendert ?? a.erstellt)).slice(0, n)
 
 /**
  * Eine Antwort, oder mehrere, die waehrend einer laufenden Auswertung kamen. Jede
@@ -177,24 +188,67 @@ export const ERKANNT = 'laut Gespräch erledigt'
 export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
 
 /** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
-export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern in offene-punkte/offen.md (### <Nr>. <Titel>). Hast du etwas erledigt, das dort als offener Punkt steht, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) - der Punkt schließt sich dann sofort. Nur für Punkte, die wirklich erledigt sind. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
+export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern; die aktuelle Liste kommt als Kontext „Offene Punkte“ mit seinen Nachrichten, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt dort durch deine Arbeit oder das Gespräch erledigt oder entschieden, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“); ist er hinfällig (anderer Weg, Angebot nicht aufgegriffen, betrifft nichts mehr), „überholt: #<Nr> – kurzer Grund“. Der Punkt schließt sich dann sofort und lässt sich per /offen wieder öffnen. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
-/** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern. */
-export function erledigtMarken(antwort: string): number[] {
-  const nummern = new Set<number>()
-  for (const m of antwort.matchAll(/erledigt:\s*((?:#\d+(?:\s*(?:,|und|\+)\s*)?)+)/gi)) {
-    for (const n of (m[1] ?? '').matchAll(/#(\d+)/g)) nummern.add(Number(n[1]))
-  }
-  return [...nummern]
+/** So viele Nachrichten des Nutzers lang gilt die Liste bei Claude als bekannt, dann kommt sie wieder (Kontext kann komprimiert sein). */
+export const LISTE_ERNEUT_NACH = 8
+
+/**
+ * Die offenen Punkte als Kontext für Claude: kurz, mit Nummer, damit er Erledigtes und
+ * Überholtes selbst schließt - er kennt den ganzen Verlauf, Haiku nur die letzte Antwort.
+ */
+export function listeFuerClaude(punkte: readonly Punkt[], s: Sicht): string {
+  const liste = offene(punkte).filter(p => !fremd(p, s.sitzung) && p.nr !== undefined).slice(0, 20)
+  if (liste.length === 0) return ''
+  const zeilen = liste.map(p => {
+    const frage = p.frage.length > 140 ? p.frage.slice(0, 139) + '…' : p.frage
+    return `#${p.nr} ${p.titel}${vermerk(p, s)}: ${frage}`
+  })
+  return `Offene Punkte (Plugin offene-punkte; der Nutzer bekommt sie als Fragen gestellt). Ist einer davon schon erledigt, entschieden oder hinfällig, schließe ihn in deiner nächsten Antwort mit „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – Grund“ - sonst nicht darauf eingehen.\n${zeilen.join('\n')}`
 }
 
-/** Schließt offene Punkte mit diesen Nummern (von Claude als erledigt gemeldet). */
-export function perMarkeSchliessen(liste: readonly Punkt[], nummern: readonly number[], jetzt: number): Punkt[] {
-  const n = new Set(nummern)
-  const grund = 'von Claude als erledigt gemeldet'
-  return liste.map(p => (p.status === 'offen' && p.ausstehend === undefined && p.nr !== undefined && n.has(p.nr)
-    ? { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
-    : p))
+export type Marke = { nr: number; ueberholt: boolean; grund: string }
+
+/** „erledigt: #3, #5“ oder „überholt: #4 – Grund“ in einer Antwort von Claude. */
+export function schlussMarken(antwort: string): Marke[] {
+  const aus = new Map<number, Marke>()
+  const muster = /(erledigt|überholt|ueberholt|hinfällig):\s*((?:#\d+(?:\s*(?:,|und|\+)\s*)?)+)(?:[ \t]*[–—-][ \t]*([^\n]+))?/gi
+  for (const m of antwort.matchAll(muster)) {
+    const ueberholt = !/^erledigt$/i.test(m[1] ?? '')
+    const grund = (m[3] ?? '').trim().replace(/[*_`]+$/, '').slice(0, 120)
+    for (const n of (m[2] ?? '').matchAll(/#(\d+)/g)) aus.set(Number(n[1]), { nr: Number(n[1]), ueberholt, grund })
+  }
+  return [...aus.values()]
+}
+
+/** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern (auch „überholt:“). */
+export const erledigtMarken = (antwort: string): number[] => schlussMarken(antwort).map(m => m.nr)
+
+/** Schließt offene Punkte mit diesen Nummern (von Claude als erledigt oder überholt gemeldet). */
+export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (number | Marke)[], jetzt: number): Punkt[] {
+  const n = new Map(marken.map(m => (typeof m === 'number' ? [m, { nr: m, ueberholt: false, grund: '' }] : [m.nr, m])))
+  return liste.map(p => {
+    const m = p.nr !== undefined ? n.get(p.nr) : undefined
+    if (m === undefined || p.status !== 'offen' || p.ausstehend !== undefined) return p
+    const grund = `von Claude als ${m.ueberholt ? 'überholt' : 'erledigt'} gemeldet${m.grund !== '' ? ` – ${m.grund}` : ''}`
+    return { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
+  })
+}
+
+/**
+ * Was lange keine Rolle mehr spielt, schließt sich selbst statt „noch aktuell?“ zu fragen:
+ * nach VERALTET_NACH Auswertungen ohne Bezug, ein Angebot schon nach ANGEBOT_VERFALL.
+ * Zurückgelegtes, Zurückgestelltes und selbst Notiertes bleibt - darüber hat der Nutzer entschieden.
+ */
+export function veraltetSchliessen(liste: readonly Punkt[], jetzt: number): Punkt[] {
+  return liste.map(p => {
+    if (p.status !== 'offen' || p.ausstehend !== undefined || p.vonNutzer === true || p.ruht !== undefined || p.zurueckgestellt > 0) return p
+    const n = p.ohneBezug ?? 0
+    const angebot = p.stufe === 'angebot' && n >= ANGEBOT_VERFALL
+    if (!angebot && n < VERALTET_NACH) return p
+    const grund = angebot ? `Angebot nicht aufgegriffen (${n} Antworten lang)` : `veraltet – ${n} Antworten lang nicht mehr erwähnt`
+    return { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
+  })
 }
 
 /** Automatisch geschlossene Punkte, die noch angezeigt werden (neueste zuerst). */
@@ -227,7 +281,10 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     const { id: _id, ...felder } = aenderungen.get(p.id) ?? { id: '' }
     return { ...p, ...felder, ohneBezug: bezug.has(p.id) ? 0 : (p.ohneBezug ?? 0) + 1 }
   })
-  const vorhanden = new Set(liste.filter(p => p.status === 'offen').map(p => schluessel(p.titel)))
+  // Nicht neu anlegen, was offen ist oder vor kurzem geschlossen wurde („das ist doch ein alter Punkt“).
+  const vorhanden = new Set(liste
+    .filter(p => p.status === 'offen' || jetzt - (p.geaendert ?? p.erstellt) < WIEDER_NEU_NACH_MS)
+    .map(p => schluessel(p.titel)))
 
   for (const n of a.neu) {
     const s = schluessel(n.titel)
@@ -236,8 +293,11 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     liste.push({ id: neueId(), ...n, status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt })
   }
 
-  return nummerieren(begrenzen(liste), ab)
+  return nummerieren(begrenzen(veraltetSchliessen(liste, jetzt)), ab)
 }
+
+/** So lange nach dem Schließen legt die Auswertung einen Punkt mit gleichem Titel nicht neu an. */
+export const WIEDER_NEU_NACH_MS = 3 * 24 * 3600_000
 
 /** Die höchste Nummer in der Liste, offen oder geschlossen (0: keine). */
 export const hoechsteNr = (liste: readonly Punkt[]): number => Math.max(0, ...liste.map(p => p.nr ?? 0))
@@ -834,13 +894,13 @@ export function ueberblickAus(antwort: string): string {
 // ---------------------------------------------------------------- Startabgleich
 
 /** So alt (seit Anlage oder letzter Prüfung) muss ein offener Punkt sein, bevor der Start ihn abgleicht. */
-export const ABGLEICH_NACH_MS = 24 * 3600_000
+export const ABGLEICH_NACH_MS = 6 * 3600_000
 
-export const ABGLEICH_AUFTRAG = `Du gleichst offene Punkte eines Projekts mit dem aktuellen Stand ab. Jeder Punkt ist eine Frage oder Aufgabe an den Nutzer, die vor mindestens einem Tag entstanden ist. Als Beleg bekommst du die Git-Commits seit dem ältesten Punkt und den letzten Überblick über die Arbeit.
+export const ABGLEICH_AUFTRAG = `Du gleichst offene Punkte eines Projekts mit dem aktuellen Stand ab. Jeder Punkt ist eine Frage oder Aufgabe an den Nutzer, die vor einigen Stunden oder Tagen entstanden ist. Als Beleg bekommst du die Git-Commits seit dem ältesten Punkt, den letzten Überblick über die Arbeit und was seither an anderen Punkten entschieden wurde (auch in anderen Sitzungen).
 
 Je Punkt entscheidest du:
 - "erledigt": die Belege zeigen klar, dass das Gefragte entschieden oder getan ist (z. B. ein Commit hält die Entscheidung fest).
-- "ueberholt": die Belege zeigen klar, dass sich der Punkt erledigt hat, weil sich der Plan oder Aufbau geändert hat (z. B. ein Schritt wurde verschoben oder ist durch einen anderen Weg unnötig).
+- "ueberholt": die Belege zeigen klar, dass sich der Punkt erledigt hat, weil sich der Plan oder Aufbau geändert hat (z. B. ein Schritt wurde verschoben oder ist durch einen anderen Weg unnötig), eine spätere Entscheidung ihn beantwortet oder er eine ältere Fassung einer inzwischen entschiedenen Frage ist.
 - "offen": sonst. Im Zweifel immer "offen" - ein fälschlich geschlossener Punkt geht verloren, ein offener kostet nur eine Frage.
 
 Antworte nur mit JSON: {"ergebnisse":[{"nr":3,"stand":"erledigt","grund":"Commit 48dbe6c hält die Entscheidung fest"}]}. Der Grund ist ein kurzer Satz auf Deutsch und nennt den Beleg (Commit-Kürzel oder Stelle im Überblick). Punkte, die offen bleiben, darfst du weglassen.`
@@ -850,7 +910,7 @@ export const abgleichKandidaten = (liste: readonly Punkt[], jetzt: number): Punk
   liste.filter(p => p.status === 'offen' && p.ausstehend === undefined && p.vonNutzer !== true && p.nr !== undefined &&
     jetzt - Math.max(p.erstellt, p.geprueft ?? 0) >= ABGLEICH_NACH_MS)
 
-export function abgleichAnfrage(punkte: readonly Punkt[], belege: { commits: string; ueberblick: string }): string {
+export function abgleichAnfrage(punkte: readonly Punkt[], belege: { commits: string; ueberblick: string; entschieden?: string }): string {
   const liste = punkte.map(p => [
     `#${p.nr} ${p.titel} (seit ${datum(p.erstellt)})`,
     `Frage: ${p.frage}`,
@@ -860,7 +920,26 @@ export function abgleichAnfrage(punkte: readonly Punkt[], belege: { commits: str
     `OFFENE PUNKTE:\n\n${liste}`,
     `GIT-COMMITS SEIT DEM ÄLTESTEN PUNKT:\n\n${belege.commits.trim() || '(keine)'}`,
     `LETZTER ÜBERBLICK:\n\n${belege.ueberblick.trim() || '(keiner)'}`,
+    `SEITHER ENTSCHIEDEN ODER ERLEDIGT:\n\n${(belege.entschieden ?? '').trim() || '(nichts)'}`,
   ].join('\n\n')
+}
+
+/**
+ * Aus Tagesverläufen (antworten-JJJJ-MM-TT.md, älteste zuerst) die Entscheidungen als
+ * Kurzzeilen „Titel: Ergebnis“; höchstens max Zeichen, die neuesten bleiben.
+ */
+export function entscheidungenAus(verlaeufe: readonly string[], max = 4000): string {
+  const zeilen: string[] = []
+  for (const text of verlaeufe) {
+    for (const block of text.split(/^## /m).slice(1)) {
+      const kopf = /^\d{2}:\d{2} · (?:#\d+ )?(.+) – (\S+)\s*$/m.exec(block)
+      const ergebnis = /^\*\*Ergebnis:\*\* (.+)$/m.exec(block)
+      if (kopf === null || ergebnis === null) continue
+      zeilen.push(`- ${kopf[1]}: ${ergebnis[1]!.slice(0, 200)}`)
+    }
+  }
+  const aus = zeilen.join('\n')
+  return aus.length > max ? '…' + aus.slice(-max) : aus
 }
 
 export type AbgleichErgebnis = { nr: number; stand: 'erledigt' | 'ueberholt'; grund: string }

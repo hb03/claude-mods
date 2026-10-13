@@ -7,8 +7,9 @@ import {
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
-  ERKANNT, HINWEIS_CLAUDE, autoErledigt, erledigtMarken, perMarkeSchliessen,
-  ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, liesAbgleich,
+  HINWEIS_CLAUDE, autoErledigt, schlussMarken, perMarkeSchliessen,
+  LISTE_ERNEUT_NACH, listeFuerClaude, veraltetSchliessen, zuletztGeschlossen,
+  ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
 } from './logik'
 import type { Ruhezeit, Sicht, Teil } from './logik'
 
@@ -74,6 +75,9 @@ const unterwegs = new Set<string>()
 let ort: Promise<{ ordner: string } | null> | null = null
 // Die eigene Sitzung: Punkte anderer Sitzungen im selben Projekt werden nicht gefragt.
 let sitzung = ''
+// Welche Liste Claude zuletzt als Kontext bekam, und wie viele Nachrichten das her ist.
+let claudeKennt = ''
+let seitListe = 0
 
 async function sicht($: EngineInterface): Promise<Sicht> {
   return { sitzung, jetzt: await $.clock.now() }
@@ -201,6 +205,9 @@ async function laden($: EngineInterface) {
  */
 async function startAbgleich($: EngineInterface) {
   const jetzt = await $.clock.now()
+  // Was schon lange keine Rolle mehr spielt (auch aus aelteren Fassungen), schliesst sich ohne Frage.
+  const veraltet = await aendere($, l => veraltetSchliessen(l, jetzt))
+  if (veraltet.length > 0) $.ui.toast(`🤖 ${veraltet.length === 1 ? '1 veralteter Punkt' : `${veraltet.length} veraltete Punkte`} geschlossen · /offen zum Wiederöffnen`, { timeoutMs: 6000 })
   const kandidaten = abgleichKandidaten(await read($, punkteA), jetzt)
   if (kandidaten.length === 0) return
   const seit = Math.floor(Math.min(...kandidaten.map(p => p.erstellt)) / 1000)
@@ -211,7 +218,7 @@ async function startAbgleich($: EngineInterface) {
   const r = await $.model.complete({
     model: modell,
     system: [{ text: ABGLEICH_AUFTRAG, cache: true }],
-    prompt: abgleichAnfrage(kandidaten, { commits, ueberblick: await read($, ueberblickA) }),
+    prompt: abgleichAnfrage(kandidaten, { commits, ueberblick: await read($, ueberblickA), entschieden: await entscheidungenSeit($, seit * 1000) }),
     maxTokens: 1500,
     timeoutMs: 45_000,
   })
@@ -227,6 +234,17 @@ async function startAbgleich($: EngineInterface) {
   const nrn = kandidaten.map(p => p.nr ?? -1)
   const zu = await aendere($, l => abgleichAnwenden(l, nrn, ergebnisse, jetzt))
   if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ beim Start abgeglichen`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 8000 })
+}
+
+/** Was seit diesem Zeitpunkt entschieden wurde, aus den Tagesverlaeufen (auch anderer Sitzungen im Projekt). */
+async function entscheidungenSeit($: EngineInterface, seit: number): Promise<string> {
+  const o = await ablageOrt($)
+  if (o === null) return ''
+  const ab = `antworten-${datum(seit)}.md`
+  const namen = await $.fs.list(o.ordner).then(l => l.filter(x => x.kind === 'file').map(x => x.name)).catch((): string[] => [])
+  const tage = namen.filter(n => /^antworten-\d{4}-\d{2}-\d{2}\.md$/.test(n) && n >= ab).sort().slice(-7)
+  const texte = await Promise.all(tage.map(n => $.fs.read(`${o.ordner}/${n}`).then(t => String(t)).catch(() => '')))
+  return entscheidungenAus(texte)
 }
 
 /**
@@ -281,11 +299,12 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
   await update($, prueftA, () => true)
   await zeigeStatus($)
   try {
-    const vorher = offene(await read($, punkteA))
+    const alle = await read($, punkteA)
+    const vorher = offene(alle)
     const r = await $.model.complete({
       model: modell,
       system: [{ text: AUFTRAG, cache: true }],
-      prompt: anfrage(antworten, eingabe, vorher, await read($, ueberblickA)),
+      prompt: anfrage(antworten, eingabe, vorher, await read($, ueberblickA), zuletztGeschlossen(alle)),
       maxTokens: 3000,
       timeoutMs: 45_000,
     })
@@ -317,7 +336,7 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
     const neu = offene(await read($, punkteA)).filter(p => !bekannt.has(p.id)).length
     const meldungen = [
       neu === 1 ? '1 neuer offener Punkt' : neu > 1 ? `${neu} neue offene Punkte` : '',
-      ...geschlossen.filter(p => p.auto !== undefined && p.ergebnis?.startsWith(ERKANNT)).map(p => `🤖 „${p.titel}“ erledigt (${p.auto?.grund})`),
+      ...geschlossen.filter(p => p.auto !== undefined).map(p => `🤖 „${p.titel}“ geschlossen (${p.auto?.grund})`),
     ].filter(t => t !== '')
     if (meldungen.length > 0) {
       const zusatz = geschlossen.length > 0 ? ' · /offen zum Wiederöffnen' : ' – Frage über der Eingabe'
@@ -755,6 +774,8 @@ export const register: Register = (on, options) => {
   zeitgeber = null
   unterwegs.clear()
   sitzung = ''
+  claudeKennt = ''
+  seitListe = 0
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -789,6 +810,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.reason === 'clear') {
       ort = null
+      claudeKennt = ''
       zeitgeber?.cancel()
       zeitgeber = null
       vorschlag = ''
@@ -823,7 +845,17 @@ export const register: Register = (on, options) => {
     // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
     const text = mit.length > 0 ? `${sammelText(teileVon(mit))}\n\n${e.text}` : e.text
     letzteEingabe = text
-    if (mit.length + eingabe.length === 0) return next(e)
+    // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (oder lange her sind): Claude
+    // kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist.
+    const liste = listeFuerClaude(punkte, await sicht($))
+    seitListe++
+    const mitListe = liste !== '' && (liste !== claudeKennt || seitListe >= LISTE_ERNEUT_NACH)
+    if (mitListe) {
+      claudeKennt = liste
+      seitListe = 0
+    }
+    const kontext = mitListe ? { context: [...(e.context ?? []), liste] } : {}
+    if (mit.length + eingabe.length === 0) return next({ ...e, ...kontext })
 
     zeitgeber?.cancel()
     zeitgeber = null
@@ -841,7 +873,7 @@ export const register: Register = (on, options) => {
       ids.add(p.id)
       ergebnisse.set(p.id, t !== '' ? `${p.ausstehend?.ergebnis} – „${t}“` : String(p.ausstehend?.ergebnis))
     }
-    const r = await next(text === e.text ? e : { ...e, text })
+    const r = await next({ ...e, text, ...kontext })
     const angekommen = !('drop' in r && r.drop !== undefined)
     // Nicht hier warten: das Schliessen schreibt Dateien.
     $.clock.after(0, () => {
@@ -868,13 +900,13 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
-    const marken = e.agentId === undefined && e.reason === 'answer' ? erledigtMarken(e.answer) : []
+    const marken = e.agentId === undefined && e.reason === 'answer' ? schlussMarken(e.answer) : []
     if (marken.length > 0) {
       $.clock.after(0, () => {
         void (async () => {
           const jetzt = await $.clock.now()
           const zu = await aendere($, l => perMarkeSchliessen(l, marken, jetzt))
-          if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ erledigt`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
+          if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ ${p.ergebnis?.includes('überholt') ? 'überholt' : 'erledigt'}`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }
