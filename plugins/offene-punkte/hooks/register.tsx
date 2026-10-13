@@ -14,8 +14,9 @@ import {
   ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
   EINGANG_TAKT_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
   HINWEIS_BLOCK, aenderungenZuIds, blockLesen,
+  gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
 } from './logik'
-import type { Auswertung, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
+import type { Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
 // Offene Punkte der Sitzung: nach jeder Antwort liest ein kleines Modell
 // (Haiku), was noch eine Entscheidung, Freigabe oder Zuarbeit des Nutzers
@@ -37,6 +38,7 @@ const eigeneA = atom({ plugin: 'offene-punkte', key: 'eigene' } as const, '')
 const spaeterA = atom({ plugin: 'offene-punkte', key: 'spaeter' } as const, '')
 const warnungenAusA = atom({ plugin: 'offene-punkte', key: 'warnungenAus' } as const, [])
 const abschickenA = atom({ plugin: 'offene-punkte', key: 'abschicken' } as const, { sekunden: 0, inEingabe: false })
+const gedankenStandA = atom({ plugin: 'offene-punkte', key: 'gedankenStand' } as const, 0)
 // Gehoert kontext-anzeige (ab 0.4.0) und wird hier nur gelesen; ohne den Mod bleibt es leer.
 const warnungenA = atom({ plugin: 'kontext-anzeige', key: 'warnungen' } as const, [] as Warnung[])
 
@@ -592,6 +594,65 @@ async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aende
   return { angelegt, geaendert: aktualisiert.length, zu, doppelt: neu.length - angelegt.length, nichtOffen: marken.length - zu.length }
 }
 
+// ---------------------------------------------------------------- Gedanken
+
+/** gedanken.md im Projektordner - die Datei ist der Stand, claude-web schreibt sie auch: immer frisch lesen. */
+async function gedankenDatei($: EngineInterface): Promise<{ datei: string; d: GedankenDatei } | null> {
+  const o = await ablageOrt($)
+  if (o === null) return null
+  const datei = `${o.ordner}/gedanken.md`
+  const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+  return { datei, d: gedankenLesen(text) }
+}
+
+async function gedankenSchreiben($: EngineInterface, datei: string, d: GedankenDatei) {
+  await schreiben($, datei, gedankenText(d))
+  await update($, gedankenStandA, n => n + 1)
+}
+
+/** Den Vermerk eines Gedankens setzen; null, wenn es ihn nicht gibt. */
+async function gedankeVermerken($: EngineInterface, nr: number, vermerk: string): Promise<Gedanke | null> {
+  const g = await gedankenDatei($)
+  const eintrag = g?.d.gedanken.find(x => x.nr === nr)
+  if (g === null || eintrag === undefined) return null
+  eintrag.vermerk = vermerk
+  await gedankenSchreiben($, g.datei, g.d)
+  return eintrag
+}
+
+/** senden / interview / punkt / erledigt / weg zu einem Gedanken - aus /offen, dem Pane und eingang.txt. */
+async function gedankeTun($: EngineInterface, nr: number, tun: 'senden' | 'interview' | 'punkt' | 'erledigt' | 'weg', text = ''): Promise<string> {
+  const g = await gedankenDatei($)
+  const eintrag = g?.d.gedanken.find(x => x.nr === nr)
+  if (g === null || eintrag === undefined) return `Gedanke G${nr} gibt es nicht – /offen gedanken zeigt die Nummern.`
+  const jetzt = await $.clock.now()
+  if (tun === 'senden' || tun === 'interview') {
+    const bitte = gedankeBitte(eintrag, tun)
+    await gedankeVermerken($, nr, tun === 'senden' ? 'gesendet' : 'im Planungsinterview')
+    $.clock.after(0, () => {
+      void $.prompt.submit({ text: bitte, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: Gedanke nicht gesendet (${String(fehler)})`))
+    })
+    return `G${nr} ${tun === 'senden' ? 'geht an Claude' : 'geht ins Planungsinterview'}.`
+  }
+  if (tun === 'punkt') {
+    // Wie /offen neu: ein eigener Punkt ohne feste Antworten, den die Auswertung in Ruhe laesst.
+    const [alle, ab] = await Promise.all([read($, punkteA), nummernAb($)])
+    const ids = new Set(alle.map(p => p.id))
+    let i = 0
+    let id: string
+    do id = `g${jetzt.toString(36)}${(i++).toString(36)}`
+    while (ids.has(id))
+    await aendere($, liste => nummerieren([...liste, notiz(eintrag.text, id, jetzt, sitzung)], ab))
+    const neu = (await read($, punkteA)).find(p => p.id === id)
+    await gedankeVermerken($, nr, `als Punkt #${neu?.nr ?? '?'}`)
+    return `G${nr} ist jetzt Punkt ${neu?.nr ?? '?'}: „${neu?.titel ?? ''}“`
+  }
+  const tag = zeitText(jetzt).slice(0, 6)
+  const vermerk = tun === 'erledigt' ? `erledigt ${tag}${text !== '' ? ` · ${text}` : ''}` : `verworfen${text !== '' ? ` · ${text}` : ''}`
+  await gedankeVermerken($, nr, vermerk)
+  return `G${nr}: ${vermerk}.`
+}
+
 const naechsteReihe = (liste: readonly Punkt[]) => Math.max(0, ...liste.map(p => p.ausstehend?.reihe ?? 0)) + 1
 
 /** Was gesammelt auf das Senden wartet. */
@@ -938,6 +999,34 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     const neu = (await read($, punkteA)).find(p => p.id === id)
     return neu === undefined ? 'Punkt nicht angelegt.' : `Punkt ${neu.nr ?? '?'} angelegt: „${neu.titel}“`
   }
+  if (k.art === 'gedanke-neu') {
+    const g = await gedankenDatei($)
+    if (g === null) return 'Kein Ablageort für Gedanken.'
+    const nr = naechsteGedankenNr(g.d)
+    const neu: Gedanke = { nr, zeit: zeitText(await $.clock.now()), vermerk: 'offen', text: k.text }
+    g.d.gedanken.push(neu)
+    await gedankenSchreiben($, g.datei, g.d)
+    return `Gedanke G${nr} notiert: „${gedankeKurz(neu)}“ – /offen gedanke ${nr} senden|interview|punkt`
+  }
+  if (k.art === 'gedanken') {
+    const g = await gedankenDatei($)
+    const liste = (g?.d.gedanken ?? []).filter(x => gedankeZustand(x) !== 'verarbeitet')
+    if (liste.length === 0) return 'Keine Gedanken offen – /offen gedanke <Text> notiert einen.'
+    return `Gedanken (${liste.length}):\n${liste.map(x => `G${x.nr} · ${x.zeit} · ${x.vermerk}: ${gedankeKurz(x, 120)}`).join('\n')}\n\n/offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen gedanken prüfen`
+  }
+  if (k.art === 'gedanken-pruefen') {
+    const g = await gedankenDatei($)
+    const inArbeit = (g?.d.gedanken ?? []).filter(x => gedankeZustand(x) === 'in Arbeit')
+    if (inArbeit.length === 0) return 'Kein Gedanke in Arbeit.'
+    // Wie /offen klaeren: ein Maschinen-Turn, in dem nur die Marken zaehlen.
+    eingabeArt = 'maschine'
+    const text = gedankenPruefBitte(inArbeit)
+    $.clock.after(0, () => {
+      void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: Prüfung nicht gesendet (${String(fehler)})`))
+    })
+    return `Prüfung von ${inArbeit.length} ${inArbeit.length === 1 ? 'Gedanken' : 'Gedanken'} geht an Claude.`
+  }
+  if (k.art === 'gedanke') return gedankeTun($, k.nummer, k.tun, k.text)
   if (k.art === 'ueberblick') {
     const u = await ueberblickErneuern($, 'befehl')
     return u !== '' ? `Überblick neu:\n${u}` : 'Überblick nicht erneuert (kein Verlauf, oder Haiku gerade nicht erlaubt).'
@@ -1055,7 +1144,7 @@ export const register: Register = (on, options) => {
     turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 antwort <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen leeren',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 antwort <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
     })
     await $.command.register({
       name: 'zusammenfassung',
@@ -1255,6 +1344,20 @@ export const register: Register = (on, options) => {
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }
+    // „gedanke erledigt: G3 – Commit abc1234“: der Vermerk in gedanken.md.
+    if (e.agentId === undefined && e.reason === 'answer' && /gedanke\s+(erledigt|umgesetzt|verworfen):/i.test(e.answer)) {
+      const antwort = e.answer
+      $.clock.after(0, () => {
+        void (async () => {
+          const jetzt = await $.clock.now()
+          const fertig: string[] = []
+          for (const m of gedankenMarken(antwort, jetzt)) {
+            if ((await gedankeVermerken($, m.nr, m.vermerk)) !== null) fertig.push(`G${m.nr} ${m.vermerk}`)
+          }
+          if (fertig.length > 0) $.ui.toast(`💭 ${fertig.join(' · ')}`, { timeoutMs: 6000 })
+        })().catch(fehler => $.ui.log(`offene-punkte: Gedanken (${String(fehler)})`))
+      })
+    }
     const benutzt = werkzeugBenutzt
     if (e.agentId === undefined) werkzeugBenutzt = false
     // Der Block in der Antwort: Punkte anlegen und aendern, ohne Werkzeug und ohne weitere Modellrunde.
@@ -1325,8 +1428,11 @@ export const register: Register = (on, options) => {
     const auto = autoErledigt(await read($, punkteA), await $.clock.now())
     const autoText = auto.length === 0 ? '' : `\n\nAutomatisch erledigt (${auto.length}, /offen <Nr> aktuell öffnet wieder):\n` + auto
       .map(p => `🤖 ${p.nr ?? '?'}. ${p.titel} – ${p.auto?.grund}`).join('\n')
+    const gedanken = ((await gedankenDatei($))?.d.gedanken ?? []).filter(x => gedankeZustand(x) !== 'verarbeitet')
+    const gedankenAbschnitt = gedanken.length === 0 ? '' : `\n\nGedanken (${gedanken.length}, /offen gedanke <Nr> senden|interview|punkt):\n` + gedanken
+      .map(x => `💭 G${x.nr} · ${x.vermerk}: ${gedankeKurz(x, 100)}`).join('\n')
     return {
-      text: kopfzeile + aktivText + ruhendText + autoText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären · /offen neu <Text>${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + autoText + gedankenAbschnitt + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären · /offen neu <Text> · /offen gedanke <Text>${fuss}`,
     }
   })
 
@@ -1428,6 +1534,9 @@ export const register: Register = (on, options) => {
     const liste = offene(punkte).filter(p => !ruht(p, s))
     const ruhend = offene(punkte).filter(p => ruht(p, s))
     const fertig = zuletztFertig(punkte)
+    // Gedanken aus der Datei; der Stand-Zaehler sorgt dafuer, dass das Pane nach einer Aenderung neu zeichnet.
+    await read($, gedankenStandA)
+    const gedanken = ((await gedankenDatei($))?.d.gedanken ?? []).filter(x => gedankeZustand(x) !== 'verarbeitet')
 
     return (
       <Box flexDirection="column">
@@ -1452,6 +1561,21 @@ export const register: Register = (on, options) => {
             {fremd(p, s.sitzung)
               ? <Button key={`hier-${p.id}`} label="Hier übernehmen" onPress={() => void aendere($, l => l.map(x => (x.id === p.id ? { ...x, sitzung } : x)))} />
               : wahl($, els, e.surface, `liste-${p.id}`, p, eigene, spaeter)}
+          </Box>
+        ))}
+        {gedanken.length > 0 && <Text key="gedanken-kopf" dimColor>— Gedanken ({gedanken.length}) —</Text>}
+        {gedanken.map(x => (
+          <Box key={`g-${x.nr}`} flexDirection="row" flexWrap="wrap">
+            <Text dimColor={gedankeZustand(x) !== 'offen'}>💭 G{x.nr} · {x.vermerk}: {gedankeKurz(x)} </Text>
+            {gedankeZustand(x) === 'offen' && <Button key={`gs-${x.nr}`} label="Senden" onPress={() => void gedankeTun($, x.nr, 'senden')} />}
+            {gedankeZustand(x) === 'offen' && <Text> </Text>}
+            {gedankeZustand(x) === 'offen' && <Button key={`gi-${x.nr}`} label="Interview" onPress={() => void gedankeTun($, x.nr, 'interview')} />}
+            {gedankeZustand(x) === 'offen' && <Text> </Text>}
+            {gedankeZustand(x) === 'offen' && <Button key={`gp-${x.nr}`} label="Als Punkt" onPress={() => void gedankeTun($, x.nr, 'punkt')} />}
+            <Text> </Text>
+            <Button key={`ge-${x.nr}`} label="Erledigt" onPress={() => void gedankeTun($, x.nr, 'erledigt')} />
+            <Text> </Text>
+            <Button key={`gw-${x.nr}`} label="Weg" onPress={() => void gedankeTun($, x.nr, 'weg')} />
           </Box>
         ))}
         {ruhend.length > 0 && <Text key="ruhend-kopf" dimColor>— zurückgelegt ({ruhend.length}) —</Text>}

@@ -119,6 +119,8 @@ declare module 'claude-code' {
        * Countdown). Mit `inEingabe` stehen sie in der Eingabe, und Enter schickt sofort.
        */
       abschicken: { sekunden: number; inEingabe: boolean }
+      /** Zählt hoch, wenn gedanken.md geändert wurde - damit das Pane neu zeichnet (die Datei selbst ist der Stand). */
+      gedankenStand: number
     }
     /** Gelesen, nicht geschrieben: die aktuellen Hinweise von kontext-anzeige (ab 0.4.0). */
     'kontext-anzeige': {
