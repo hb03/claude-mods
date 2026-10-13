@@ -448,11 +448,15 @@ export function eingetippteAntworten(nachricht: string, punkte: readonly Punkt[]
   const aus: { id: string; text: string }[] = []
   const muster = /(?:Zum offenen Punkt|^[ \t]*-)[ \t]*(?:#(\d+)[ \t]*)?„([^“\n]+)“(?:[ \t]*\([^)\n]*\))?:[ \t]*([^\n]*)/gm
   for (const m of nachricht.matchAll(muster)) {
+    const text = (m[3] ?? '').trim()
+    // Die Bitte des Knopfs „Ausführen“ ist keine Antwort: der Punkt bleibt offen, bis Claude ausgeführt hat.
+    if (/^Bitte führe aus:/.test(text)) continue
     const nr = m[1] !== undefined ? Number(m[1]) : undefined
     const s = schluessel(m[2] ?? '')
-    const p = offen.find(x => (nr !== undefined && x.nr === nr) || schluessel(x.titel) === s)
+    // Die Nummer gewinnt; der Titel zaehlt nur ohne Nummer oder wenn die Nummer nicht offen ist.
+    const p = (nr !== undefined ? offen.find(x => x.nr === nr) : undefined) ?? offen.find(x => schluessel(x.titel) === s)
     if (p === undefined || aus.some(a => a.id === p.id)) continue
-    aus.push({ id: p.id, text: (m[3] ?? '').trim() })
+    aus.push({ id: p.id, text })
   }
   return aus
 }
@@ -1078,6 +1082,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
       abwaegung: text(p.abwaegung, 800),
       anleitung: text(p.anleitung, 4000),
       optionen: optionenLesen(p.optionen),
+      ...(p.mehrfach === true ? { mehrfach: true } : {}),
       status,
       zurueckgestellt: typeof p.zurueckgestellt === 'number' ? p.zurueckgestellt : 0,
       ohneBezug: typeof p.ohneBezug === 'number' ? p.ohneBezug : 0,

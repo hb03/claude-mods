@@ -946,6 +946,9 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     const liste = fragbar(await read($, punkteA), await sicht($))
     if (liste.length === 0) return 'Es ist nichts offen.'
     const text = klaerungsBitte(liste)
+    // Ein eigener Submit laeuft nicht durch den eigenen prompt.submit-Hook: die Antwort darauf gilt
+    // als Maschinen-Turn (nur Marken und Block, kein Nachfassen, kein Altern).
+    eingabeArt = 'maschine'
     $.clock.after(0, () => {
       void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: Klärung nicht gesendet (${String(fehler)})`))
     })
@@ -975,8 +978,15 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
       : `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
   }
   if (k.tun === 'antwort') {
-    // Freie Antwort (auch von claude-web per tmux): schliesst den Punkt und geht sofort, ohne zweiten Befehl.
-    await antworten($, punkt, { status: 'erledigt', label: 'eigene Antwort', text: k.text })
+    // Freie Antwort (auch von claude-web): schliesst den Punkt und geht sofort - direkt in die Sammlung,
+    // nicht ueber die Eingabe (dort bliebe sie liegen, bis jemand Enter drueckt).
+    const w: Wahl = { status: 'erledigt', label: 'eigene Antwort', text: k.text }
+    await aendere($, liste => {
+      const reihe = naechsteReihe(liste)
+      return liste.map(p => (p.id === punkt.id
+        ? { ...p, ausstehend: { status: w.status, ergebnis: ergebnis(w, w.text), text: w.text, wo: 'sammlung' as const, reihe } }
+        : p))
+    })
     await senden($)
     return `„${punkt.titel}“: Antwort geht an Claude.`
   }

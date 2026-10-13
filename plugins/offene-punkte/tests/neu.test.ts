@@ -132,6 +132,9 @@ const HAIKU = JSON.stringify({
   erledigt: [],
 })
 
+// Unter Windows reicht die Engine Pfade als C:\projekt\... an die fs-Hooks; die Schlüssel der Maps bleiben POSIX.
+const pfad = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+
 function grundlage(on: On, dateien: Map<string, string>, box = { text: '' }) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
@@ -144,16 +147,16 @@ function grundlage(on: On, dateien: Map<string, string>, box = { text: '' }) {
   on('session.root', () => ({ value: '/projekt' }) as never)
   on('env.get', () => ({ value: '/home/x' }) as never)
   on('fs.stat', (_, e) => {
-    if (e.path === '/projekt/.git') return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } } as never
+    if (pfad(e.path) === '/projekt/.git') return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } } as never
     throw new Error('ENOENT')
   })
   on('fs.read', (_, e) => {
-    const t = dateien.get(e.path)
+    const t = dateien.get(pfad(e.path))
     if (t === undefined) throw new Error('ENOENT')
     return { value: t } as never
   })
   on('fs.write', (_, e) => {
-    dateien.set(e.path, e.text)
+    dateien.set(pfad(e.path), e.text)
     return { value: undefined } as never
   })
   on('ui.render', ($, e) => {

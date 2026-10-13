@@ -119,6 +119,9 @@ describe('Verlauf und Warnungen', () => {
 
 type Eintrag = { name: string; kind: 'file'; size: number; mtimeMs: number; isLink: boolean }
 
+// Unter Windows reicht die Engine Pfade als C:\projekt\... an die fs-Hooks; die Schlüssel der Maps bleiben POSIX.
+const pfad = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+
 function grundlage(on: On, dateien: Map<string, string>, liste: Eintrag[] = []) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
@@ -132,16 +135,16 @@ function grundlage(on: On, dateien: Map<string, string>, liste: Eintrag[] = []) 
   on('session.id', () => ({ value: 'A' }) as never)
   on('env.get', () => ({ value: undefined }) as never)
   on('fs.stat', (_, e) => {
-    if (e.path === '/projekt/.git') return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } } as never
+    if (pfad(e.path) === '/projekt/.git') return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } } as never
     throw new Error('ENOENT')
   })
   on('fs.read', (_, e) => {
-    const t = dateien.get(e.path)
+    const t = dateien.get(pfad(e.path))
     if (t === undefined) throw new Error('ENOENT')
     return { value: t } as never
   })
   on('fs.write', (_, e) => {
-    dateien.set(e.path, e.text)
+    dateien.set(pfad(e.path), e.text)
     return { value: undefined } as never
   })
   on('fs.list', () => ({ value: liste }) as never)
@@ -283,7 +286,8 @@ test('alte Tagesverläufe wandern beim Start in die Monatsdatei', async ($, on) 
   await uhr.settle()
 
   expect(dateien.get('/projekt/offene-punkte/antworten-2026-08.md')).toContain('## 2026-08-01\n\n### 10:00 · X – entschieden')
-  expect(befehle).toEqual([['rm', '-f', '/projekt/offene-punkte/antworten-2026-08-01.md']])
+  // Der Startabgleich schreibt offen.md und offen.json ebenfalls über process.run (mv -f): hier zählen nur die rm-Aufrufe.
+  expect(befehle.filter(b => b[0] === 'rm')).toEqual([['rm', '-f', '/projekt/offene-punkte/antworten-2026-08-01.md']])
 })
 
 // ---------------------------------------------------------------- 0.8.0: fortlaufende Nummern, Später mit Termin, /offen neu
