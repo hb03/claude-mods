@@ -25,7 +25,7 @@ function grundlage(on: On) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
   on('ui.toast', () => ({ value: {} }) as never)
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.open', () => ({ value: { isPlaced: false } }) as never)
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('command.register', () => ({ value: {} }) as never)
   on('ui.render', ($, e) => {
@@ -116,28 +116,42 @@ for (const [fork, erwartet] of [
   test(`/zusammenfassung: ${fork.isAnswered ? 'Antwort' : fork.reason}`, async ($, on) => {
     grundlage(on)
     const gefragt: string[] = []
+    // Genau ein Fork (die Zusammenfassung); der Überblick kommt nicht mehr als zweiter Fork.
     on('model.fork', (_, e) => {
-      const prompt = String((e as { prompt?: string }).prompt)
-      gefragt.push(prompt)
-      return { value: prompt.includes('ÜBERBLICK') ? { isAnswered: false, reason: 'api-error' } : fork } as never
+      gefragt.push(String((e as { prompt?: string }).prompt))
+      return { value: fork } as never
     })
     const r = await $.command.run({ command: 'zusammenfassung', args: '' } as never)
     expect(String((r as { text?: string }).text)).toContain(erwartet)
-    expect(gefragt.length).toBe(2)
-    expect(gefragt.some(p => p.includes('Was du noch tun musst'))).toBe(true)
+    expect(gefragt.length).toBe(1)
+    expect(gefragt[0]).toContain('Was du noch tun musst')
   })
 }
 
-test('/zusammenfassung schreibt den Überblick neu – ein alter Stand bleibt nicht stehen', async ($, on) => {
-  grundlage(on)
-  mock.clock(on)
-  on('model.fork', (_, e) => {
-    const prompt = String((e as { prompt?: string }).prompt)
-    return { value: prompt.includes('ÜBERBLICK')
-      ? { isAnswered: true, text: 'Hier der Überblick:\n- **Ziel:** Knopf bauen\n- **Gerade:** Tests' }
-      : { isAnswered: true, text: '## Worum es ging\nKnopf.' } } as never
+/** Der Verlauf, wie $.session.messages() ihn liefert, und Haiku, das daraus den Überblick schreibt. */
+function verlaufUndHaiku(on: On, ueberblick: string) {
+  on('session.messages', () => ({ value: [
+    { role: 'user', text: 'Bau den Knopf.', toolUses: [] },
+    { role: 'assistant', text: 'Der Knopf ist gebaut, die Tests laufen.', toolUses: [] },
+  ] }) as never)
+  const anfragen: string[] = []
+  on('model.complete', (_, e) => {
+    anfragen.push(String((e as { prompt?: string }).prompt))
+    return { value: { isAnswered: true, text: ueberblick } } as never
   })
+  return anfragen
+}
+
+test('/zusammenfassung schreibt den Überblick neu – aus dem Verlauf per Haiku, ein alter Stand bleibt nicht stehen', async ($, on) => {
+  grundlage(on)
+  const uhr = mock.clock(on)
+  on('model.fork', () => ({ value: { isAnswered: true, text: '## Worum es ging\nKnopf.' } }) as never)
+  const anfragen = verlaufUndHaiku(on, 'Hier der Überblick:\n- **Ziel:** Knopf bauen\n- **Gerade:** Tests')
   await $.command.run({ command: 'zusammenfassung', args: '' } as never)
+  await uhr.settle()
+  expect(anfragen.length).toBe(1)
+  expect(anfragen[0]).toContain('NUTZER: Bau den Knopf.')
+  expect(anfragen[0]).toContain('ASSISTENT: Der Knopf ist gebaut')
   const r = await $.command.run({ command: 'offen', args: '' } as never)
   const text = String((r as { text?: string }).text)
   expect(text).toContain('**Gerade:** Tests')
@@ -146,12 +160,21 @@ test('/zusammenfassung schreibt den Überblick neu – ein alter Stand bleibt ni
 
 test('/zusammenfassung ohne brauchbaren Überblick lässt den alten stehen', async ($, on) => {
   grundlage(on)
-  mock.clock(on)
-  on('model.fork', (_, e) => {
-    const prompt = String((e as { prompt?: string }).prompt)
-    return { value: { isAnswered: true, text: prompt.includes('ÜBERBLICK') ? 'Keine Liste.' : '## Worum es ging\nKnopf.' } } as never
-  })
+  const uhr = mock.clock(on)
+  on('model.fork', () => ({ value: { isAnswered: true, text: '## Worum es ging\nKnopf.' } }) as never)
+  verlaufUndHaiku(on, 'Keine Liste.')
   await $.command.run({ command: 'zusammenfassung', args: '' } as never)
+  await uhr.settle()
   const r = await $.command.run({ command: 'offen', args: '' } as never)
   expect(String((r as { text?: string }).text)).not.toContain('Keine Liste')
+})
+
+test('/offen überblick schreibt den Überblick aus dem Verlauf neu', async ($, on) => {
+  grundlage(on)
+  const uhr = mock.clock(on)
+  const anfragen = verlaufUndHaiku(on, '- **Ziel:** Knopf bauen\n- **Erledigt:** Tests grün')
+  const r = await $.command.run({ command: 'offen', args: 'überblick' } as never)
+  await uhr.settle()
+  expect(anfragen.length).toBe(1)
+  expect(String((r as { text?: string }).text)).toContain('**Erledigt:** Tests grün')
 })

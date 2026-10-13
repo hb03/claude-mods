@@ -8,6 +8,29 @@ export const MAX_ANTWORT = 12_000
 export const VERALTET_NACH = 10
 /** Ein Angebot, auf das so viele Antworten lang niemand eingeht, gilt als stilles Nein. */
 export const ANGEBOT_VERFALL = 4
+/** Muss zu .claude-plugin/plugin.json passen; steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt. */
+export const VERSION = '0.15.0'
+/** So oft prüft eine laufende Sitzung, ob ein Abgleich fällig ist - Server-Sitzungen laufen tagelang ohne Neustart. */
+export const ABGLEICH_TAKT_MS = 60 * 60_000
+/** Ab so viel Prozent des 5-Stunden-Fensters ruft der Mod kein Haiku mehr (Option haikuBisProzent). */
+export const BUDGET_GRENZE = 85
+
+/** Eingaben, die kein Mensch getippt hat, obwohl sie aus der Eingabe kommen: claude-webs Klärung (per tmux). */
+const MASCHINEN_EINGABE = /^\s*(?:Automatische Kl(?:ä|ae)rung|Vor Ablauf des Caches)\b/i
+export const istMaschinenEingabe = (text: string): boolean => MASCHINEN_EINGABE.test(text)
+
+/** Eine Zeile für kosten.jsonl: was ein Haiku-Aufruf gekostet hat. */
+export const kostenZeile = (
+  art: string,
+  usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number },
+  sitzung: string,
+  jetzt: number,
+): string =>
+  JSON.stringify({
+    zeit: new Date(jetzt).toISOString(), sitzung, art,
+    eingabe: usage.input_tokens + usage.cache_creation_input_tokens, cache: usage.cache_read_input_tokens, ausgabe: usage.output_tokens,
+    version: VERSION,
+  })
 
 /** Fester Teil des Auftrags - steht vorn, damit der Prompt-Cache ihn hält. */
 export const AUFTRAG = `Du liest die letzte Antwort eines Coding-Assistenten an seinen Nutzer und findest OFFENE PUNKTE: Dinge, die noch nicht erledigt sind und eine Entscheidung, Freigabe, Zuarbeit oder Prüfung des Nutzers brauchen - besonders solche, die leicht untergehen.
@@ -56,6 +79,21 @@ Antworte NUR mit JSON, ohne Erklärung, in genau dieser Form:
 {"neu":[{"titel":"2-5 Wörter","art":"aufgabe","stufe":"normal","frage":"Ein Satz?","info":"Warum offen, ein Satz.","abwaegung":"","anleitung":"1. ...\n\`\`\`bash\nbefehl\n\`\`\`","mehrfach":false,"optionen":[{"label":"...","antwort":"..."}]}],"aktualisiert":[{"id":"...","anleitung":"..."}],"erledigt":[{"id":"...","grund":"..."}],"erwaehnt":["id"],"ueberblick":"- **Ziel:** ..."}
 Gibt es nichts davon: {"neu":[],"aktualisiert":[],"erledigt":[],"erwaehnt":[],"ueberblick":"..."}`
 
+/**
+ * Auftrag fürs Nachfassen (Auswertung „claude“): Claude trägt Punkte selbst ein; Haiku springt nur ein,
+ * wenn die Antwort fragt und nichts eingetragen wurde. Kurz gehalten (rund ein Fünftel von AUFTRAG), ohne
+ * Überblick, und streng: die Schlussfrage allein ist kein Punkt - der Nutzer beantwortet sie gleich.
+ */
+export const NACHFASSEN_AUFTRAG = `Du liest die letzte Antwort eines Coding-Assistenten an seinen Nutzer. Der Assistent trägt offene Punkte normalerweise selbst ein; hier hat er nichts eingetragen, obwohl die Antwort mit einer Frage oder Bitte endet. Finde NUR, was verloren ginge, wenn der Nutzer jetzt bloß auf die Schlussfrage antwortet: Aufgaben, die er selbst auf seinem Rechner, Handy oder Konto erledigen muss; Freigaben oder Entscheidungen mit Folgen, die in der Antwort genannt, aber nicht als Schlussfrage gestellt sind; Daten oder Zugangsdaten, die er liefern muss; mehrere Fragen auf einmal, von denen eine untergehen kann.
+
+KEIN Punkt für: die einzelne Rückfrage am Ende, die der Nutzer sowieso gleich beantwortet; Angebote ("soll ich noch …?", "könnte ich auch …"); "neu starten?"; Prüfungen, die der Assistent selbst machen kann (Logs, Tests, Dateien, Dienste); Erklärungen; Fragen, die der Assistent als Auswahl-Dialog stellt; alles, was eine ANDERE Claude-Sitzung betrifft. Im Zweifel nichts eintragen: {"neu":[],"erledigt":[],"erwaehnt":[]}.
+
+Jeder Punkt: "titel" (2-5 Wörter), "art" ("aufgabe": der Nutzer tut selbst etwas; "entscheidung": er wählt oder gibt frei), "stufe" ("blockiert": ohne ihn geht es nicht weiter; sonst "normal"), "frage" (ein Satz an den Nutzer), "info" (warum offen, ein Satz), "abwaegung" (Gründe aus der Antwort, höchstens ein Satz, sonst leer), "anleitung" (nur bei Aufgaben: nummerierte Schritte mit allen Befehlen, Pfaden und Werten WÖRTLICH aus der Antwort, Befehle in \`\`\`bash-Blöcken; sonst leer), "optionen": 1 bis 2, die Empfehlung zuerst, jede mit "label" (höchstens 6 Wörter, spezifisch, ohne ich/du) und "antwort" (der Satz, den der Nutzer dem Assistenten damit schickt, Ich-Form aus Sicht des Nutzers; endet sie mit ":", muss der Nutzer noch etwas ergänzen). Keine Optionen für Später, Schon erledigt, Nicht relevant, eigene Antwort - die gibt es immer. Nennt die Antwort die Webseite des Projekts, schreib Seiten mit voller Adresse.
+
+Bekannte offene Punkte stehen unten mit ID: NICHT neu melden. Erledigt die neue Antwort oder die letzte Nachricht des Nutzers einen davon, oder ist er überholt, melde ihn unter "erledigt" als {"id":"...","grund":"wenige Wörter"}; geht die Antwort darauf ein, die ID unter "erwaehnt". Kürzlich geschlossene Punkte (unten) nicht neu anlegen.
+
+Antworte NUR mit JSON: {"neu":[{"titel":"...","art":"aufgabe","stufe":"normal","frage":"...?","info":"...","abwaegung":"","anleitung":"","mehrfach":false,"optionen":[{"label":"...","antwort":"..."}]}],"erledigt":[{"id":"...","grund":"..."}],"erwaehnt":["id"]}`
+
 /** Der wechselnde Teil: bekannte Punkte, letzte Nachricht des Nutzers, die Antwort(en). */
 export function anfrage(antworten: string | readonly string[], letzteEingabe: string, offene: readonly Punkt[], ueberblick = '', geschlossen: readonly Punkt[] = []): string {
   const bekannt = offene.length === 0
@@ -86,8 +124,8 @@ function antwortTeil(antworten: string | readonly string[]): string {
     liste.map((t, i) => `--- Antwort ${i + 1} ---\n${kuerzen(t, anteil)}`).join('\n\n')
 }
 
-/** Felder, die Haiku an einem bekannten Punkt nachschärfen darf. */
-export type Aenderung = { id: string } & Partial<Pick<Punkt, 'frage' | 'info' | 'anleitung' | 'abwaegung' | 'optionen' | 'stufe'>>
+/** Felder, die Haiku oder Claude an einem bekannten Punkt nachschärfen darf. */
+export type Aenderung = { id: string } & Partial<Pick<Punkt, 'titel' | 'frage' | 'info' | 'anleitung' | 'abwaegung' | 'optionen' | 'stufe'>>
 
 export type Auswertung = {
   neu: { titel: string; art: Art; stufe: Stufe; frage: string; info: string; abwaegung: string; anleitung: string; optionen: Option[] }[]
@@ -155,6 +193,7 @@ export function lies(roh: string): Auswertung | null {
     const a = roh as Record<string, unknown>
     if (typeof a.id !== 'string') continue
     const aenderung: Aenderung = { id: a.id }
+    // Den Titel darf nur Claude ändern (Werkzeug, Block) - Haiku nicht, er ist der Schlüssel gegen Doppelte.
     for (const [feld, max] of [['frage', 300], ['info', 300], ['anleitung', 4000], ['abwaegung', 800]] as const) {
       const wert = text(a[feld], max)
       if (wert !== '') aenderung[feld] = wert
@@ -190,15 +229,29 @@ export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
 /** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
 export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern; die aktuelle Liste kommt als Kontext „Offene Punkte“ mit seinen Nachrichten, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt dort durch deine Arbeit oder das Gespräch erledigt oder entschieden, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“); ist er hinfällig (anderer Weg, Angebot nicht aufgegriffen, betrifft nichts mehr), „überholt: #<Nr> – kurzer Grund“. Der Punkt schließt sich dann sofort und lässt sich per /offen wieder öffnen. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
+/**
+ * Hinweis bei Eintrag „block“ (Standard): Claude schreibt offene Punkte als Block ans Ende seiner Antwort.
+ * Kein Werkzeug im Katalog (rund 800 Tokens in jeder Anfrage) und keine zusätzliche Modellrunde für den
+ * Aufruf - der Block wird aus der fertigen Antwort gelesen wie „erledigt: #N“.
+ */
+export const HINWEIS_BLOCK = `Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten nicht mit, nur einen Block darin: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung mit Folgen, Freigabe, Zugangsdaten, Prüfung von Hand, Aufgabe auf seinem Rechner oder Handy), schreib ans Ende deiner Antwort einen Block in dieser Form:
+\`\`\`offen
+# Titel (2-5 Wörter) | aufgabe oder entscheidung | blockiert, normal oder angebot
+Die Frage an den Nutzer, ein Satz?
+a) Empfehlung (Label, höchstens 6 Wörter)
+b) Alternative - endet das Label mit ":", ergänzt der Nutzer noch Text
+info: warum offen, ein Satz (kann entfallen)
+anleitung: nur bei Aufgaben - Schritte mit allen Befehlen, Pfaden und Werten wörtlich, Befehle als eigene Zeilen mit "$ " davor
+\`\`\`
+Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
+
 /** Hinweis bei Auswertung „claude“: Claude legt Punkte selbst an, statt dass Haiku jede Antwort liest. */
 export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
-
-/** So viele Nachrichten des Nutzers lang gilt die Liste bei Claude als bekannt, dann kommt sie wieder (Kontext kann komprimiert sein). */
-export const LISTE_ERNEUT_NACH = 8
 
 /**
  * Die offenen Punkte als Kontext für Claude: kurz, mit Nummer, damit er Erledigtes und
  * Überholtes selbst schließt - er kennt den ganzen Verlauf, Haiku nur die letzte Antwort.
+ * Geht mit, wenn sie sich geändert hat, und nach einer Compaction noch einmal.
  */
 export function listeFuerClaude(punkte: readonly Punkt[], s: Sicht): string {
   const liste = offene(punkte).filter(p => !fremd(p, s.sitzung) && p.nr !== undefined).slice(0, 20)
@@ -207,32 +260,60 @@ export function listeFuerClaude(punkte: readonly Punkt[], s: Sicht): string {
     const frage = p.frage.length > 140 ? p.frage.slice(0, 139) + '…' : p.frage
     return `#${p.nr} ${p.titel}${vermerk(p, s)}: ${frage}`
   })
-  return `Offene Punkte (Plugin offene-punkte; der Nutzer bekommt sie als Fragen gestellt). Ist einer davon schon erledigt, entschieden oder hinfällig, schließe ihn in deiner nächsten Antwort mit „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – Grund“ - sonst nicht darauf eingehen.\n${zeilen.join('\n')}`
+  return `Offene Punkte (Plugin offene-punkte): Erledigtes oder Hinfälliges mit „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – Grund“ schließen, sonst nicht darauf eingehen.\n${zeilen.join('\n')}`
 }
 
-export type Marke = { nr: number; ueberholt: boolean; grund: string }
+/** nr -1 mit titel: Claude hat den Punkt beim Namen genannt („erledigt: Leitstand neu starten“). */
+export type Marke = { nr: number; ueberholt: boolean; grund: string; titel?: string }
 
-/** „erledigt: #3, #5“ oder „überholt: #4 – Grund“ in einer Antwort von Claude. */
+/**
+ * „erledigt: #3, #5“, „überholt: #4 – Grund“ - oder, am Zeilenanfang, „erledigt: Titel des Punkts“:
+ * der Nutzer nennt Punkte oft nur beim Titel, und nach einer Compaction kennt Claude die Nummern nicht.
+ */
 export function schlussMarken(antwort: string): Marke[] {
-  const aus = new Map<number, Marke>()
+  const aus = new Map<string, Marke>()
   const muster = /(erledigt|überholt|ueberholt|hinfällig):\s*((?:#\d+(?:\s*(?:,|und|\+)\s*)?)+)(?:[ \t]*[–—-][ \t]*([^\n]+))?/gi
   for (const m of antwort.matchAll(muster)) {
     const ueberholt = !/^erledigt$/i.test(m[1] ?? '')
     const grund = (m[3] ?? '').trim().replace(/[*_`]+$/, '').slice(0, 120)
-    for (const n of (m[2] ?? '').matchAll(/#(\d+)/g)) aus.set(Number(n[1]), { nr: Number(n[1]), ueberholt, grund })
+    for (const n of (m[2] ?? '').matchAll(/#(\d+)/g)) aus.set(`#${n[1]}`, { nr: Number(n[1]), ueberholt, grund })
+  }
+  const perTitel = /^[ \t]*[*_]*(erledigt|überholt|ueberholt|hinfällig):[*_]*[ \t]*([^#\s][^\n]*)$/gim
+  for (const m of antwort.matchAll(perTitel)) {
+    const ueberholt = !/^erledigt$/i.test(m[1] ?? '')
+    const [roh, ...rest] = (m[2] ?? '').split(/[ \t]+[–—-][ \t]+/)
+    const titel = (roh ?? '').replace(/[*_`„“"]+/g, '').trim()
+    if (titel === '' || titel.length > 80) continue
+    aus.set(`t:${schluessel(titel)}`, { nr: -1, ueberholt, grund: rest.join(' – ').trim().replace(/[*_`]+$/, '').slice(0, 120), titel })
   }
   return [...aus.values()]
 }
 
 /** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern (auch „überholt:“). */
-export const erledigtMarken = (antwort: string): number[] => schlussMarken(antwort).map(m => m.nr)
+export const erledigtMarken = (antwort: string): number[] => schlussMarken(antwort).filter(m => m.nr >= 0).map(m => m.nr)
 
-/** Schließt offene Punkte mit diesen Nummern (von Claude als erledigt oder überholt gemeldet). */
+/** Schließt offene Punkte, die eine Marke nennt - per Nummer oder per Titel (gleich, oder einer enthält den anderen). */
 export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (number | Marke)[], jetzt: number): Punkt[] {
-  const n = new Map(marken.map(m => (typeof m === 'number' ? [m, { nr: m, ueberholt: false, grund: '' }] : [m.nr, m])))
+  const n = new Map<number, Marke>()
+  const titel: Marke[] = []
+  for (const m of marken) {
+    if (typeof m === 'number') n.set(m, { nr: m, ueberholt: false, grund: '' })
+    else if (m.titel !== undefined) titel.push(m)
+    else n.set(m.nr, m)
+  }
+  const passt = (p: Punkt): Marke | undefined => {
+    const perNr = p.nr !== undefined ? n.get(p.nr) : undefined
+    if (perNr !== undefined) return perNr
+    const s = schluessel(p.titel)
+    return titel.find(m => {
+      const t = schluessel(m.titel ?? '')
+      return t === s || (t.length >= 8 && s.length >= 8 && (s.includes(t) || t.includes(s)))
+    })
+  }
   return liste.map(p => {
-    const m = p.nr !== undefined ? n.get(p.nr) : undefined
-    if (m === undefined || p.status !== 'offen' || p.ausstehend !== undefined) return p
+    if (p.status !== 'offen' || p.ausstehend !== undefined) return p
+    const m = passt(p)
+    if (m === undefined) return p
     const grund = `von Claude als ${m.ueberholt ? 'überholt' : 'erledigt'} gemeldet${m.grund !== '' ? ` – ${m.grund}` : ''}`
     return { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
   })
@@ -345,12 +426,35 @@ export function zuruecknehmen(liste: readonly Punkt[], ids?: ReadonlySet<string>
  * nach „Titel“: bis zur nächsten Antwort. null: der Punkt steht nicht (mehr) darin.
  */
 export function antwortIn(nachricht: string, titel: string): string | null {
-  const marke = `„${titel}“:`
-  const start = nachricht.indexOf(marke)
-  if (start < 0) return null
-  const rest = nachricht.slice(start + marke.length)
+  // „Titel“: oder „Titel“ (Frage): - die Frage steht bei Block-Punkten dabei.
+  const anfang = nachricht.indexOf(`„${titel}“`)
+  if (anfang < 0) return null
+  const marke = /^„[^“]*“(?:[ \t]*\([^)\n]*\))?:/.exec(nachricht.slice(anfang))
+  if (marke === null) return null
+  const rest = nachricht.slice(anfang + marke[0].length)
   const ende = rest.search(/\n(- „|Zum offenen Punkt „)/)
   return (ende < 0 ? rest : rest.slice(0, ende)).trim()
+}
+
+/**
+ * Antworten, die der Nutzer selbst in seine Nachricht geschrieben hat - oder claude-web per tmux:
+ * „Zum offenen Punkt #12 „Titel“: Text“, „Zum offenen Punkt „Titel“: Text“ oder Zeilen
+ * „- „Titel“: Text“ unter „Zu den offenen Punkten:“. Nur offene, noch nicht beantwortete Punkte;
+ * sie schließen sich, sobald die Nachricht bei Claude ist, ohne zweiten Befehl.
+ */
+export function eingetippteAntworten(nachricht: string, punkte: readonly Punkt[]): { id: string; text: string }[] {
+  const offen = offene(punkte)
+  if (offen.length === 0 || !/offenen Punkt/i.test(nachricht)) return []
+  const aus: { id: string; text: string }[] = []
+  const muster = /(?:Zum offenen Punkt|^[ \t]*-)[ \t]*(?:#(\d+)[ \t]*)?„([^“\n]+)“(?:[ \t]*\([^)\n]*\))?:[ \t]*([^\n]*)/gm
+  for (const m of nachricht.matchAll(muster)) {
+    const nr = m[1] !== undefined ? Number(m[1]) : undefined
+    const s = schluessel(m[2] ?? '')
+    const p = offen.find(x => (nr !== undefined && x.nr === nr) || schluessel(x.titel) === s)
+    if (p === undefined || aus.some(a => a.id === p.id)) continue
+    aus.push({ id: p.id, text: (m[3] ?? '').trim() })
+  }
+  return aus
 }
 
 /** Offene vorne behalten, Erledigtes als Erstes weglassen, wenn es zu viele werden. */
@@ -420,31 +524,35 @@ export function altern(liste: readonly Punkt[], antwort: string, jetzt: number):
 /** Name des Werkzeugs, mit dem Claude selbst Punkte anlegt und schließt (gelistet als mcp__offene-punkte__punkte). */
 export const WERKZEUG = 'punkte'
 
-export const WERKZEUG_BESCHREIBUNG = 'Führt die offenen Punkte des Nutzers (Plugin offene-punkte): Fragen, Freigaben und Aufgaben, die er beantworten oder erledigen muss; sie werden ihm über der Eingabe als Auswahl gestellt. Rufe es in derselben Antwort auf, in der du etwas vom Nutzer brauchst, das leicht untergeht (Entscheidung zwischen Varianten, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt) - nicht für Rückfragen, die er sowieso gleich beantwortet, nicht für Dinge, die du selbst prüfen kannst, nicht für eine Frage, die du schon mit AskUserQuestion stellst. Mit "schliessen" meldest du Punkte, die erledigt, entschieden oder hinfällig sind. Optionen: kurze, spezifische Labels (höchstens 6 Wörter, ohne ich/du) und je eine "antwort", die genau so als Nachricht des Nutzers an dich geht (Ich-Form aus Sicht des Nutzers; endet sie mit ":", wird sie nur in die Eingabe gelegt, damit er ergänzt). Nicht anbieten: Später, Schon erledigt, Nicht relevant, eigene Antwort - die gibt es immer. Bei einer Aufgabe gehört in "anleitung" alles zum Ausführen (Schritte, Befehle in ```bash-Blöcken, Pfade), damit er nicht im Verlauf suchen muss.'
+export const WERKZEUG_BESCHREIBUNG = 'Führt die offenen Punkte des Nutzers (Plugin offene-punkte): Entscheidungen, Freigaben und Aufgaben, die er beantworten oder erledigen muss und die leicht untergehen; er bekommt sie über der Eingabe als Auswahl. "neu" legt Punkte an (titel 2-5 Wörter; optionen: höchstens zwei, Empfehlung zuerst, label höchstens 6 Wörter, antwort = der Satz, den der Nutzer dir damit schickt, Ich-Form; endet sie mit ":", ergänzt er Text), "aktualisieren" ändert bestehende per nr, "schliessen" meldet Erledigtes oder Hinfälliges. Nicht für Rückfragen, die der Nutzer gleich beantwortet, nicht für Prüfungen, die du selbst machen kannst, nicht für Fragen per AskUserQuestion. Keine Optionen für Später, Schon erledigt, Nicht relevant, eigene Antwort. Bei Aufgaben gehört in "anleitung" alles zum Ausführen (Schritte, Befehle in ```bash-Blöcken, Pfade).'
+
+/** Ein neuer oder geänderter Punkt, wie Claude ihn im Werkzeug beschreibt. */
+const PUNKT_FELDER = {
+  titel: { type: 'string', description: '2-5 Wörter' },
+  art: { type: 'string', enum: ['entscheidung', 'aufgabe'] },
+  stufe: { type: 'string', enum: ['blockiert', 'normal', 'angebot'] },
+  frage: { type: 'string', description: 'ein Satz an den Nutzer' },
+  info: { type: 'string', description: 'warum offen, ein Satz' },
+  abwaegung: { type: 'string', description: 'Gründe und Empfehlung, ein Satz' },
+  anleitung: { type: 'string' },
+  mehrfach: { type: 'boolean', description: 'Optionen lassen sich kombinieren' },
+  optionen: {
+    type: 'array',
+    items: { type: 'object', properties: { label: { type: 'string' }, antwort: { type: 'string' } }, required: ['label', 'antwort'] },
+  },
+} as const
 
 export const WERKZEUG_SCHEMA = {
   type: 'object',
   properties: {
     neu: {
       type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          titel: { type: 'string', description: '2-5 Wörter' },
-          art: { type: 'string', enum: ['entscheidung', 'aufgabe'] },
-          stufe: { type: 'string', enum: ['blockiert', 'normal', 'angebot'] },
-          frage: { type: 'string', description: 'ein Satz an den Nutzer' },
-          info: { type: 'string', description: 'warum offen, ein Satz' },
-          abwaegung: { type: 'string', description: 'Gründe und Empfehlung, höchstens drei Sätze' },
-          anleitung: { type: 'string' },
-          mehrfach: { type: 'boolean', description: 'Optionen lassen sich kombinieren' },
-          optionen: {
-            type: 'array',
-            items: { type: 'object', properties: { label: { type: 'string' }, antwort: { type: 'string' } }, required: ['label', 'antwort'] },
-          },
-        },
-        required: ['titel', 'art', 'frage', 'optionen'],
-      },
+      items: { type: 'object', properties: PUNKT_FELDER, required: ['titel', 'art', 'frage', 'optionen'] },
+    },
+    aktualisieren: {
+      type: 'array',
+      description: 'bestehende Punkte ändern, nur die Felder, die sich ändern',
+      items: { type: 'object', properties: { nr: { type: 'number' }, ...PUNKT_FELDER }, required: ['nr'] },
     },
     schliessen: {
       type: 'array',
@@ -461,19 +569,102 @@ export const WERKZEUG_SCHEMA = {
   },
 } as const
 
-/** Liest den Aufruf des Werkzeugs: neue Punkte wie aus der Auswertung, zu schließende als Marken. */
-export function werkzeugLesen(eingabe: unknown): { neu: Auswertung['neu']; marken: Marke[] } {
+/** Eine Änderung an einem bestehenden Punkt, den Claude per Nummer nennt. */
+export type NrAenderung = { nr: number } & Omit<Aenderung, 'id'>
+
+const nummer = (x: unknown): number => (typeof x === 'number' ? x : typeof x === 'string' ? Number(x.replace('#', '')) : NaN)
+
+/** Liest den Aufruf des Werkzeugs: neue Punkte wie aus der Auswertung, Änderungen per Nummer, zu schließende als Marken. */
+export function werkzeugLesen(eingabe: unknown): { neu: Auswertung['neu']; aenderungen: NrAenderung[]; marken: Marke[] } {
   const e = typeof eingabe === 'object' && eingabe !== null ? eingabe as Record<string, unknown> : {}
-  const neu = lies(JSON.stringify({ neu: Array.isArray(e.neu) ? e.neu : [] }))?.neu ?? []
+  const roh = (Array.isArray(e.aktualisieren) ? e.aktualisieren : [])
+    .filter((x): x is Record<string, unknown> => typeof x === 'object' && x !== null && Number.isInteger(nummer(x.nr)))
+  // Dieselben Grenzen wie bei Haiku: die Nummer wird vorübergehend zur ID.
+  const gelesen = lies(JSON.stringify({ neu: Array.isArray(e.neu) ? e.neu : [], aktualisiert: roh.map(x => ({ ...x, id: String(nummer(x.nr)) })) }))
+  const titel = new Map(roh.map(x => [nummer(x.nr), text(x.titel, 80)]))
+  const aenderungen: NrAenderung[] = (gelesen?.aktualisiert ?? []).map(({ id, ...felder }) => {
+    const t = titel.get(Number(id)) ?? ''
+    return { nr: Number(id), ...felder, ...(t !== '' ? { titel: t } : {}) }
+  })
   const marken: Marke[] = []
   for (const x of Array.isArray(e.schliessen) ? e.schliessen : []) {
     if (typeof x !== 'object' || x === null) continue
     const m = x as Record<string, unknown>
-    const nr = typeof m.nr === 'number' ? m.nr : typeof m.nr === 'string' ? Number(m.nr.replace('#', '')) : NaN
+    const nr = nummer(m.nr)
     if (!Number.isInteger(nr)) continue
     marken.push({ nr, ueberholt: m.ueberholt === true, grund: text(m.grund, 120) })
   }
-  return { neu, marken }
+  return { neu: gelesen?.neu ?? [], aenderungen, marken }
+}
+
+/** Änderungen per Nummer auf die IDs der offenen Punkte abbilden; unbekannte Nummern fallen weg. */
+export function aenderungenZuIds(liste: readonly Punkt[], aenderungen: readonly NrAenderung[]): Aenderung[] {
+  const ids = new Map(liste.filter(p => p.status === 'offen' && p.nr !== undefined).map(p => [p.nr, p.id]))
+  return aenderungen.flatMap(({ nr, ...felder }) => {
+    const id = ids.get(nr)
+    return id === undefined ? [] : [{ id, ...felder }]
+  })
+}
+
+/**
+ * Der Block in Claudes Antwort (Eintrag „block“): ein Zaun \`\`\`offen, darin je Punkt eine Zeile
+ * „# Titel | art | stufe“ (oder „# #12 Titel“ für eine Änderung), dann die Frage, Möglichkeiten „a) …“,
+ * Zeilen „info:“, „abwaegung:“ und ab „anleitung:“ alles bis zum nächsten Punkt. Die Labels der
+ * Möglichkeiten sind zugleich die Antwort an Claude - er kennt seine eigenen Worte.
+ */
+export function blockLesen(antwort: string): { neu: Auswertung['neu']; aenderungen: NrAenderung[] } {
+  const roh: Record<string, unknown>[] = []
+  for (const zaun of antwort.matchAll(/```(?:offen|offene-punkte)[ \t]*\r?\n([\s\S]*?)```/g)) {
+    let p: Record<string, unknown> | null = null
+    let anleitung: string[] | null = null
+    for (const zeile of (zaun[1] ?? '').split(/\r?\n/)) {
+      const kopf = /^#[ \t]+(.*)$/.exec(zeile)
+      if (kopf !== null) {
+        // Die Anleitung des vorigen Punkts endet hier.
+        if (p !== null && anleitung !== null) p.anleitung = anleitung.join('\n').trim()
+        const [titelTeil, ...flags] = (kopf[1] ?? '').split('|').map(t => t.trim())
+        const nr = /^#(\d+)\s+(.*)$/.exec(titelTeil ?? '')
+        p = { titel: nr !== null ? nr[2] : titelTeil, optionen: [] as { label: string; antwort: string }[] }
+        if (nr !== null) p.nr = Number(nr[1])
+        for (const f of flags.map(x => x.toLowerCase())) {
+          if (f === 'aufgabe' || f === 'entscheidung') p.art = f
+          else if (f === 'blockiert' || f === 'normal' || f === 'angebot') p.stufe = f
+          else if (f === 'mehrfach') p.mehrfach = true
+        }
+        anleitung = null
+        roh.push(p)
+        continue
+      }
+      if (p === null) continue
+      if (anleitung !== null) {
+        anleitung.push(zeile)
+        continue
+      }
+      const option = /^[-*]?[ \t]*([a-d])[).][ \t]+(.+)$/.exec(zeile)
+      if (option !== null) {
+        const label = (option[2] ?? '').trim()
+        ;(p.optionen as { label: string; antwort: string }[]).push({ label, antwort: label })
+        continue
+      }
+      const feld = /^(info|abwaegung|abwägung|anleitung|stufe|art):[ \t]*(.*)$/i.exec(zeile)
+      if (feld !== null) {
+        const name = (feld[1] ?? '').toLowerCase().replace('ä', 'ae')
+        const wert = (feld[2] ?? '').trim()
+        if (name === 'anleitung') anleitung = wert !== '' ? [wert] : []
+        else if (name === 'art' && (wert === 'aufgabe' || wert === 'entscheidung')) p.art = wert
+        else if (name === 'stufe' && (wert === 'blockiert' || wert === 'normal' || wert === 'angebot')) p.stufe = wert
+        else if (name === 'info' || name === 'abwaegung') p[name] = wert
+        continue
+      }
+      const t = zeile.trim()
+      if (t === '') continue
+      p.frage = typeof p.frage === 'string' && p.frage !== '' ? `${p.frage} ${t}` : t
+    }
+    // Der letzte Punkt eines Zauns: seine Anleitung endet mit dem Zaun.
+    if (p !== null && anleitung !== null) p.anleitung = anleitung.join('\n').trim()
+  }
+  const { neu, aenderungen } = werkzeugLesen({ neu: roh.filter(p => p.nr === undefined), aktualisieren: roh.filter(p => p.nr !== undefined) })
+  return { neu, aenderungen }
 }
 
 /** Sprachen, deren Codeblöcke als Shell-Befehl gelten (leer: ohne Angabe). */
@@ -485,6 +676,11 @@ const SHELL = new Set(['', 'bash', 'sh', 'shell', 'console', 'zsh'])
  */
 export function befehle(anleitung: string): string[] {
   const liste: string[] = []
+  // Zeilen „$ befehl“ ausserhalb von Codeblöcken (so schreibt Claude sie im Block).
+  for (const m of anleitung.replace(/```[\s\S]*?```/g, '').matchAll(/^[ \t]*\$[ \t]+(.+?)[ \t]*$/gm)) {
+    const befehl = (m[1] ?? '').trim()
+    if (befehl !== '' && !liste.includes(befehl)) liste.push(befehl)
+  }
   for (const m of anleitung.matchAll(/```([^\n`]*)\n([\s\S]*?)```/g)) {
     if (!SHELL.has((m[1] ?? '').trim().toLowerCase())) continue
     const zeilen = (m[2] ?? '').split('\n')
@@ -513,16 +709,22 @@ export function ausfuehrBitte(titel: string, befehl: string): string {
 /** Wie lange gesammelte Antworten nach der letzten Wahl auf weitere warten. */
 export const WARTEZEIT = 30_000
 
-/** Eine gesammelte Antwort: zu welchem Punkt, und was Claude bekommt. */
-export type Teil = { titel: string; text: string }
+/**
+ * Eine gesammelte Antwort: zu welchem Punkt, und was Claude bekommt. Mit `frage`, wenn der Text nur
+ * das Label einer Möglichkeit ist (Block-Punkte): dann steht die Frage dabei, damit Claude auch nach
+ * einer Compaction weiss, worauf sich „55 MB“ bezieht.
+ */
+export type Teil = { titel: string; text: string; frage?: string }
+
+const teilKopf = (t: Teil) => `„${t.titel}“${t.frage !== undefined && t.frage !== '' ? ` (${t.frage})` : ''}`
 
 /**
  * Die gesammelten Antworten als eine Nachricht. Ist der letzte Text leer, endet sie
  * offen - für die Eingabe, wo der Nutzer noch etwas ergänzt.
  */
 export function sammelText(teile: readonly Teil[]): string {
-  if (teile.length === 1) return `Zum offenen Punkt „${teile[0]!.titel}“: ${teile[0]!.text}`
-  return 'Zu den offenen Punkten:\n' + teile.map(t => `- „${t.titel}“: ${t.text}`).join('\n')
+  if (teile.length === 1) return `Zum offenen Punkt ${teilKopf(teile[0]!)}: ${teile[0]!.text}`
+  return 'Zu den offenen Punkten:\n' + teile.map(t => `- ${teilKopf(t)}: ${t.text}`).join('\n')
 }
 
 /** Kurzform eines Befehls für die Auswahl. */
@@ -532,22 +734,39 @@ export type Kommando =
   | { art: 'liste' }
   | { art: 'leeren' }
   | { art: 'senden' }
+  /** Claude soll die offenen Punkte selbst durchgehen (erledigt/überholt per Marke), ohne sie neu zu formulieren. */
+  | { art: 'klaeren' }
+  /** Den Überblick aus dem Verlauf neu schreiben lassen (Haiku). */
+  | { art: 'ueberblick' }
   | { art: 'fehler'; text: string }
   | { art: 'neu'; text: string }
+  /** Alle offenen Punkte dieser Sitzung auf einmal schließen (claude-web, Aufräumen). */
+  | { art: 'alle'; tun: 'erledigt' | 'weg'; grund: string }
   | { art: 'punkt'; nummer: number; tun: 'erledigt' | 'weg' | 'spaeter' | 'aktuell' | 'option'; option?: number; bis?: Ruhezeit }
   | { art: 'punkt'; nummer: number; tun: 'optionen'; optionen: number[] }
+  /** Freie Antwort auf einen Punkt: schließt ihn und geht sofort an Claude. */
+  | { art: 'punkt'; nummer: number; tun: 'antwort'; text: string }
 
 const ZEITWORT: Record<string, Ruhezeit> = { sitzung: 'sitzung', morgen: 'morgen', drei: 'drei', woche: 'woche' }
 
-/** Liest die Argumente von /offen: "", "leeren", "neu Text", "2 erledigt", "3 weg", "1 später", "1 später morgen", "2 a". */
+/** Liest die Argumente von /offen: "", "leeren", "neu Text", "2 erledigt", "3 weg", "1 später", "1 später morgen", "2 a", "2 antwort Text", "alle weg Grund". */
 export function kommando(args: string): Kommando {
   const neu = /^neu(?:\s+([\s\S]*))?$/i.exec(args.trim())
   if (neu !== null) {
     const text = (neu[1] ?? '').trim()
     return text === '' ? { art: 'fehler', text: 'Verwendung: /offen neu <Text>' } : { art: 'neu', text }
   }
+  const antwort = /^(\d+)\s+antwort(?:\s+([\s\S]*))?$/i.exec(args.trim())
+  if (antwort !== null) {
+    const text = (antwort[2] ?? '').trim()
+    return text === '' ? { art: 'fehler', text: 'Verwendung: /offen <Nr> antwort <Text>' } : { art: 'punkt', nummer: Number(antwort[1]), tun: 'antwort', text }
+  }
+  const alle = /^alle\s+(weg|verwerfen|erledigt|fertig)(?:\s+([\s\S]*))?$/i.exec(args.trim())
+  if (alle !== null) return { art: 'alle', tun: /^(weg|verwerfen)$/i.test(alle[1] ?? '') ? 'weg' : 'erledigt', grund: (alle[2] ?? '').trim() }
   const a = args.trim().toLowerCase()
   if (a === '') return { art: 'liste' }
+  if (a === 'klären' || a === 'klaeren') return { art: 'klaeren' }
+  if (a === 'überblick' || a === 'ueberblick') return { art: 'ueberblick' }
   // Mehrere Antworten: "3 a c" oder "3 a,c" (bei Punkten mit Mehrfachauswahl)
   const mehrere = /^(\d+)\s+([a-d](?:[\s,]+[a-d])+)$/.exec(a)
   if (mehrere !== null) {
@@ -574,7 +793,26 @@ export function kommando(args: string): Kommando {
   return { art: 'fehler', text: HILFE }
 }
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen neu <Text> · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären · /offen überblick · /offen neu <Text> · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+
+/**
+ * Die Bitte, die /offen klären an Claude schickt. Beginnt mit „Automatische Klärung“, damit der
+ * Turn nicht ausgewertet wird (keine neuen Punkte, keine Alterung) - nur die Marken darin zählen.
+ * Anders als claude-webs alte Klärung verlangt sie Marken statt neu formulierter Fragen: die
+ * hielten die Punkte am Leben und erzeugten Geschwister mit anderem Titel.
+ */
+export function klaerungsBitte(punkte: readonly Punkt[]): string {
+  const liste = punkte.map(p => `#${p.nr ?? '?'} ${p.titel} (${p.frage})`).join('; ')
+  return `Automatische Klärung der offenen Punkte: ${liste}. Geh sie durch. Ist einer inzwischen erledigt, entschieden oder hinfällig - aus dem Verlauf, oder weil du es selbst nachsehen kannst (Code, Logs, Dateien, Commits) -, schreib je eine Zeile „erledigt: #N – Grund“ bzw. „überholt: #N – Grund“. Noch offene Punkte nicht neu formulieren und keine neuen Punkte anlegen; nenne sie höchstens als „offen: #N – was noch fehlt“ in einer Zeile. Nichts umsetzen.`
+}
+
+/** Vorbereitete Bitten zu einem Punkt (Knöpfe Erklären, Planungsinterview, Selbst klären); der Punkt bleibt offen. */
+export function bitteZu(art: 'erklaeren' | 'interview' | 'klaeren', p: Punkt): string {
+  const nr = p.nr !== undefined ? `#${p.nr} ` : ''
+  if (art === 'erklaeren') return `Erkläre mir den offenen Punkt ${nr}„${p.titel}“ genauer: worum geht es, welche Möglichkeiten gibt es, was empfiehlst du und warum?`
+  if (art === 'interview') return `Lass uns den offenen Punkt ${nr}„${p.titel}“ im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab.`
+  return `Kläre den offenen Punkt ${nr}„${p.titel}“ bitte selbst (Code, Logs, Dateien, Commits) und sag mir das Ergebnis; ist er damit erledigt, schreib „erledigt: ${nr.trim() || p.titel}“.`
+}
 
 /** Ein Punkt, den der Nutzer selbst notiert (/offen neu): Titel aus den ersten Wörtern, ohne feste Antworten. */
 export function notiz(text: string, id: string, jetzt: number, sitzung: string): Punkt {
@@ -777,10 +1015,18 @@ const optionenText = (p: Punkt) => (p.mehrfach === true ? '   (mehrere möglich)
  * Die Datei mit den offenen Punkten: oben lesbar, unten die Daten für die
  * nächste Sitzung in einem HTML-Kommentar.
  */
+/** Die zuletzt geschlossenen Punkte, neueste zuerst (nach Schließzeit, nicht nach Listenplatz). */
+export const zuletztFertig = (punkte: readonly Punkt[], n = 8): Punkt[] =>
+  punkte.filter(p => p.status !== 'offen').sort((x, y) => (y.geaendert ?? y.erstellt) - (x.geaendert ?? x.erstellt)).slice(0, n)
+
+/** Die Daten für die nächste Sitzung und für claude-web (offen.json) - mit Fassung und Zeitpunkt des Schreibens. */
+export const ablageDaten = (a: Ablage, jetzt: number): string =>
+  JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)), version: VERSION, stand: jetzt })
+
 export function ablageText(a: Ablage, jetzt: number): string {
   // Auch was beantwortet, aber noch nicht bei Claude ist: es kommt in der nächsten Sitzung wieder.
   const liste = offene(zuruecknehmen(a.punkte))
-  const fertig = a.punkte.filter(p => p.status !== 'offen').slice(-8).reverse()
+  const fertig = zuletztFertig(a.punkte)
   const teile = [`# Offene Punkte\n\nStand: ${datum(jetzt)} ${uhrzeit(jetzt)} · wird von offene-punkte geschrieben, Änderungen hier gehen verloren.`]
   if (a.ueberblick !== '') teile.push(`## Überblick\n\n${a.ueberblick}`)
   teile.push(liste.length === 0
@@ -795,7 +1041,7 @@ export function ablageText(a: Ablage, jetzt: number): string {
     ].filter(t => t !== '').join('\n\n')).join('\n\n'))
   if (fertig.length > 0) teile.push('## Zuletzt erledigt\n\n' + fertig.map(p => `- ${p.status === 'verworfen' ? '✗' : p.auto !== undefined ? '🤖' : '✓'} ${p.titel}${p.ergebnis ? `: ${p.ergebnis}` : ''}`).join('\n'))
   // "-->" darf im Kommentar nicht vorkommen; in JSON-Zeichenketten ist > dasselbe Zeichen.
-  const daten = JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)) }).replace(/-->/g, '--\\u003e')
+  const daten = ablageDaten(a, jetzt).replace(/-->/g, '--\\u003e')
   teile.push(`${DATEN_ANFANG}\n${daten}\n-->`)
 
   return teile.join('\n\n') + '\n'
@@ -888,7 +1134,13 @@ export function hoechsteImVerlauf(text: string): number {
 }
 
 function verlaufsEintrag(p: Punkt, jetzt: number): string {
-  const wie = p.status === 'verworfen' ? 'verworfen' : p.art === 'aufgabe' ? 'erledigt' : 'entschieden'
+  // Ohne Zutun geschlossen (Auswertung, Marke, Abgleich, Sammelschluss): niemand hat eine Möglichkeit
+  // gewählt, also nur Frage und Grund - solche Einträge waren über die Hälfte des Verlaufs.
+  const auto = p.auto !== undefined || /^gesammelt /.test(p.ergebnis ?? '')
+  const wie = p.status === 'verworfen' ? 'verworfen'
+    : auto ? (/überholt/.test(p.ergebnis ?? '') ? 'überholt' : 'automatisch geschlossen')
+      : p.art === 'aufgabe' ? 'erledigt' : 'entschieden'
+  if (auto) return [`## ${uhrzeit(jetzt)} · ${nrText(p)}${p.titel} – ${wie}`, `**Frage:** ${p.frage}`, `**Ergebnis:** ${p.ergebnis ?? wie}`].join('\n\n') + '\n'
   return [
     `## ${uhrzeit(jetzt)} · ${nrText(p)}${p.titel} – ${wie}`,
     `**Frage:** ${p.frage}`,
@@ -976,6 +1228,49 @@ export function ueberblickAus(antwort: string): string {
   return zeilen.slice(erste).join('\n').trim().slice(0, 2000)
 }
 
+// ---------------------------------------------------------------- Überblick aus dem Verlauf
+
+/** Nach so vielen fertigen Menschen-Turns schreibt Haiku den Überblick neu (auch nach jeder Compaction). */
+export const UEBERBLICK_NACH = 8
+/** So viel vom Verlauf bekommt Haiku für den Überblick (der Schluss zählt am meisten). */
+export const MAX_VERLAUF = 16_000
+
+/** Eine Nachricht, wie $.session.messages() sie liefert - nur die Felder, die hier zählen. */
+export type Nachricht = { role: 'user' | 'assistant'; text: string }
+
+/**
+ * Der eigene Verlauf als Text für Haiku: nur die Texte von Nutzer und Assistent, keine
+ * Tool-Ergebnisse, jede Nachricht gekürzt, insgesamt höchstens MAX_VERLAUF Zeichen vom Ende.
+ * Ein Fork des Hauptmodells läse dagegen den ganzen Kontext - zum Preis des Hauptmodells.
+ */
+export function verlaufsText(nachrichten: readonly Nachricht[], max = MAX_VERLAUF): string {
+  const zeilen: string[] = []
+  for (const n of nachrichten) {
+    const t = (n.text ?? '').trim()
+    if (t === '') continue
+    const kurz = t.length > 1_500 ? `${t.slice(0, 1_200)} … ${t.slice(-250)}` : t
+    zeilen.push(`${n.role === 'user' ? 'NUTZER' : 'ASSISTENT'}: ${kurz}`)
+  }
+  const aus = zeilen.join('\n\n')
+  return aus.length > max ? '…' + aus.slice(-max) : aus
+}
+
+// ---------------------------------------------------------------- Eingang (claude-web, Skripte)
+
+/** So oft sieht eine Sitzung nach, ob in eingang.txt etwas liegt. */
+export const EINGANG_TAKT_MS = 15_000
+
+/**
+ * eingang.txt: je Zeile ein /offen-Befehl ohne das „/offen“ („12 antwort Ja, bitte“, „12 a“,
+ * „12 erledigt“, „alle weg Aufgeräumt“, „klären“, „neu Text“). claude-web oder ein Skript hängt an,
+ * die Sitzung führt aus und leert die Datei. Leere Zeilen und Kommentare (#) fallen weg.
+ */
+export function eingangZeilen(text: string): string[] {
+  return text.split(/\r?\n/)
+    .map(z => z.trim().replace(/^\/offen\s+/i, ''))
+    .filter(z => z !== '' && !z.startsWith('#'))
+}
+
 // ---------------------------------------------------------------- Startabgleich
 
 /** So alt (seit Anlage oder letzter Prüfung) muss ein offener Punkt sein, bevor der Start ihn abgleicht. */
@@ -1017,7 +1312,7 @@ export function entscheidungenAus(verlaeufe: readonly string[], max = 4000): str
   const zeilen: string[] = []
   for (const text of verlaeufe) {
     for (const block of text.split(/^## /m).slice(1)) {
-      const kopf = /^\d{2}:\d{2} · (?:#\d+ )?(.+) – (\S+)\s*$/m.exec(block)
+      const kopf = /^\d{2}:\d{2} · (?:#\d+ )?(.+) – ([^\n]+?)\s*$/m.exec(block)
       const ergebnis = /^\*\*Ergebnis:\*\* (.+)$/m.exec(block)
       if (kopf === null || ergebnis === null) continue
       zeilen.push(`- ${kopf[1]}: ${ergebnis[1]!.slice(0, 200)}`)

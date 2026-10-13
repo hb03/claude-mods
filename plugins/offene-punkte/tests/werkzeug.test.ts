@@ -52,8 +52,8 @@ describe('werkzeugLesen', () => {
     })
     expect(r.neu.map(p => p.titel)).toEqual(['A'])
     expect(r.marken.map(m => [m.nr, m.ueberholt])).toEqual([[3, true], [4, false]])
-    expect(werkzeugLesen('nix')).toEqual({ neu: [], marken: [] })
-    expect(werkzeugLesen({ neu: 'x', schliessen: 'y' })).toEqual({ neu: [], marken: [] })
+    expect(werkzeugLesen('nix')).toEqual({ neu: [], aenderungen: [], marken: [] })
+    expect(werkzeugLesen({ neu: 'x', schliessen: 'y' })).toEqual({ neu: [], aenderungen: [], marken: [] })
   })
 })
 
@@ -61,7 +61,7 @@ function grundlage(on: On) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
   on('ui.toast', () => ({ value: {} }) as never)
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.open', () => ({ value: { isPlaced: false } }) as never)
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('command.register', () => ({ value: {} }) as never)
   on('ui.render', ($, e) => {

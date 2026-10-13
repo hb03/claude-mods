@@ -136,7 +136,7 @@ function grundlage(on: On, dateien: Map<string, string>, box = { text: '' }) {
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.log', () => ({ value: undefined }) as never)
   on('ui.toast', () => ({ value: {} }) as never)
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.open', () => ({ value: { isPlaced: false } }) as never)
   on('command.register', () => ({ value: {} }) as never)
   // Die Eingabe, wie sie gerade steht (ein Aufruf ohne eigenes Ereignis in den Typen).
   ;(on as unknown as (name: string, hook: () => unknown) => void)('prompt.read', () => ({ value: { text: box.text, cursor: box.text.length } }))

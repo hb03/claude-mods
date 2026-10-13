@@ -9,10 +9,13 @@ import {
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
   HINWEIS_CLAUDE, HINWEIS_WERKZEUG, autoErledigt, schlussMarken, perMarkeSchliessen,
   WERKZEUG, WERKZEUG_BESCHREIBUNG, WERKZEUG_SCHEMA, altern, nachfassen, werkzeugLesen,
-  LISTE_ERNEUT_NACH, listeFuerClaude, veraltetSchliessen, zuletztGeschlossen,
+  listeFuerClaude, veraltetSchliessen, zuletztGeschlossen, zuletztFertig,
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
+  ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
+  EINGANG_TAKT_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
+  HINWEIS_BLOCK, aenderungenZuIds, blockLesen,
 } from './logik'
-import type { Ruhezeit, Sicht, Teil } from './logik'
+import type { Auswertung, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
 // Offene Punkte der Sitzung: nach jeder Antwort liest ein kleines Modell
 // (Haiku), was noch eine Entscheidung, Freigabe oder Zuarbeit des Nutzers
@@ -48,6 +51,10 @@ const ERLEDIGT = '__erledigt'
 const VERWERFEN = '__verwerfen'
 const AKTUELL = '__aktuell'
 const BEFEHL = '__befehl:'
+// Vorbereitete Bitten (aus claude-web uebernommen): der Punkt bleibt offen, der Nutzer schickt selbst ab.
+const ERKLAEREN = '__erklaeren'
+const INTERVIEW = '__interview'
+const KLAEREN = '__klaeren'
 
 
 // Einstellungen, von register gesetzt.
@@ -57,6 +64,9 @@ let fragenAnzeigen = true
 // "claude": Claude legt Punkte mit dem Werkzeug selbst an, Haiku fasst nur nach, wenn er es vergessen
 // hat; "haiku": Haiku liest jede Antwort (wie bis 0.13).
 let auswertung: 'claude' | 'haiku' = 'claude'
+// "block": Claude schreibt Punkte als Block ans Ende der Antwort (kein Werkzeug im Katalog, keine
+// Extra-Runde); "werkzeug": wie 0.14 ueber das Werkzeug punkte. Der Block wird in beiden Faellen gelesen.
+let eintrag: 'block' | 'werkzeug' = 'block'
 // Hat Claude das Werkzeug in der laufenden Antwort benutzt? Dann braucht es kein Nachfassen.
 let werkzeugBenutzt = false
 const WERKZEUG_VOLL = `mcp__offene-punkte__${WERKZEUG}`
@@ -82,9 +92,25 @@ const unterwegs = new Set<string>()
 let ort: Promise<{ ordner: string } | null> | null = null
 // Die eigene Sitzung: Punkte anderer Sitzungen im selben Projekt werden nicht gefragt.
 let sitzung = ''
-// Welche Liste Claude zuletzt als Kontext bekam, und wie viele Nachrichten das her ist.
+// Welche Liste Claude zuletzt als Kontext bekam; leer nach /clear und nach einer Compaction.
 let claudeKennt = ''
-let seitListe = 0
+// Sitzt ein Mensch davor? Unter claude -p oder dem SDK bleibt der Mod still: nur Datei und Marken.
+let interaktiv = true
+// Kam die letzte Eingabe von einem Menschen (Tastatur, Handy) oder von einer Maschine (Peer-Nachricht,
+// Zeitplan, claude-webs Klaerung per tmux)? Nach Maschinen-Turns wird nicht ausgewertet und nichts altert.
+let eingabeArt: 'mensch' | 'maschine' = 'mensch'
+// Laeuft gerade ein Turn? Der Abgleich wartet dann auf den naechsten Takt.
+let turnLaeuft = false
+let abgleichLaeuft = false
+let abgleichTakt: Timer | null = null
+// Ab so viel Prozent des 5-Stunden-Fensters kein Haiku mehr (Option haikuBisProzent).
+let budgetGrenze = BUDGET_GRENZE
+// Ueberblick: laeuft gerade einer, und wie viele fertige Menschen-Turns seit dem letzten.
+let ueberblickLaeuft = false
+let fertigeTurns = 0
+// Eingang (eingang.txt): der naechste Blick hinein.
+let eingangTakt: Timer | null = null
+let eingangLaeuft = false
 
 async function sicht($: EngineInterface): Promise<Sicht> {
   return { sitzung, jetzt: await $.clock.now() }
@@ -142,14 +168,31 @@ function ablageOrt($: EngineInterface) {
 }
 
 /**
- * Schreibt offen.md. Vorher wird eingelesen, was dort steht: eine andere Sitzung im selben
- * Projekt kann inzwischen Punkte angelegt oder geschlossen haben (abgleich: false beim Leeren).
+ * Schreibt eine Datei in einem Zug: erst daneben, dann an ihren Platz - wer sie gerade liest
+ * (claude-web, eine zweite Sitzung), sieht nie einen halben Stand. Klappt das Verschieben nicht
+ * (kein mv, Rechte), wird direkt geschrieben.
  */
-async function speichern($: EngineInterface, abgleich = true) {
+async function schreiben($: EngineInterface, datei: string, text: string) {
+  const tmp = `${datei}.${(sitzung || 'neu').slice(0, 8)}.tmp`
+  const windows = (await $.env.get('OS').catch(() => undefined)) === 'Windows_NT'
+  const ok = await $.fs.write(tmp, text)
+    .then(() => $.process.run(windows
+      ? ['cmd', '/c', 'move', '/y', tmp.replace(/\//g, '\\'), datei.replace(/\//g, '\\')]
+      : ['mv', '-f', tmp, datei]))
+    .then(r => r.exitCode === 0)
+    .catch(() => false)
+  if (!ok) await $.fs.write(datei, text)
+}
+
+/**
+ * Schreibt offen.md und offen.json. Vorher wird eingelesen, was dort steht: eine andere Sitzung im
+ * selben Projekt kann inzwischen Punkte angelegt oder geschlossen haben (mitAbgleich: false beim Leeren).
+ */
+async function speichern($: EngineInterface, mitAbgleich = true) {
   const o = await ablageOrt($)
   if (o === null) return
   const datei = `${o.ordner}/offen.md`
-  if (abgleich) {
+  if (mitAbgleich) {
     const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
     const dort = text === '' ? null : ablageLesen(text)
     if (dort !== null) {
@@ -160,8 +203,12 @@ async function speichern($: EngineInterface, abgleich = true) {
   }
   await zaehlerHeben($, hoechsteNr(await read($, punkteA)))
   const [punkte, ueberblick, h, jetzt] = await Promise.all([read($, punkteA), read($, ueberblickA), read($, hoechsteA), $.clock.now()])
-  await $.fs.write(datei, ablageText({ punkte, ueberblick, hoechsteNr: h }, jetzt))
+  const daten = { punkte, ueberblick, hoechsteNr: h }
+  await schreiben($, datei, ablageText(daten, jetzt))
     .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`))
+  // Dieselben Daten als reine JSON-Datei fuer claude-web; der Block in offen.md bleibt fuer aeltere Sitzungen.
+  await schreiben($, `${o.ordner}/offen.json`, `${ablageDaten(daten, jetzt)}\n`)
+    .catch(fehler => $.ui.log(`offene-punkte: offen.json nicht geschrieben (${String(fehler)})`))
 }
 
 async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number) {
@@ -169,8 +216,40 @@ async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number
   if (o === null || eintraege.length === 0) return
   const datei = `${o.ordner}/antworten-${datum(jetzt)}.md`
   const alt = await $.fs.read(datei).then(t => String(t)).catch(() => verlaufKopf(jetzt))
-  await $.fs.write(datei, `${alt}\n${eintraege.join('\n')}`)
+  await schreiben($, datei, `${alt}\n${eintraege.join('\n')}`)
     .catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht geschrieben (${String(fehler)})`))
+}
+
+/** Darf der Mod gerade Haiku rufen? Nicht ohne Menschen davor und nicht, wenn das 5-Stunden-Fenster fast voll ist. */
+async function haikuErlaubt($: EngineInterface): Promise<boolean> {
+  if (!interaktiv) return false
+  try {
+    const u = await $.session.usage()
+    const fenster = (u?.rateLimits ?? []).find(r => r.kind === 'five_hour')
+    return fenster === undefined || typeof fenster.percentUsed !== 'number' || fenster.percentUsed < budgetGrenze
+  } catch {
+    // Kein Verbrauchsstand (Test, alter Host): dann gilt kein Limit.
+    return true
+  }
+}
+
+type ModellAntwort = Awaited<ReturnType<EngineInterface['model']['complete']>> | { isAnswered: false; reason: 'budget' }
+
+/** Ein Haiku-Aufruf mit Buchfuehrung: was er gekostet hat, kommt nach kosten.jsonl im Projektordner. */
+async function haiku($: EngineInterface, art: string, request: Parameters<EngineInterface['model']['complete']>[0]): Promise<ModellAntwort> {
+  if (!(await haikuErlaubt($))) return { isAnswered: false, reason: 'budget' }
+  const r = await $.model.complete(request)
+  if (r.isAnswered && r.usage !== undefined) {
+    const o = await ablageOrt($)
+    if (o !== null) {
+      const datei = `${o.ordner}/kosten.jsonl`
+      const alt = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+      // Nicht endlos wachsen lassen: ab 200 kB bleibt der juengere Teil.
+      const basis = alt.length > 200_000 ? alt.slice(alt.indexOf('\n', alt.length - 150_000) + 1) : alt
+      await $.fs.write(datei, `${basis}${kostenZeile(art, r.usage, sitzung, await $.clock.now())}\n`).catch(() => undefined)
+    }
+  }
+  return r
 }
 
 /** Liste aendern; was dabei geschlossen oder wieder geoeffnet wird, geht in den Verlauf. Alles landet in der Datei. */
@@ -206,41 +285,136 @@ async function laden($: EngineInterface) {
 }
 
 /**
- * Zum Start: offene Punkte, die seit einem Tag niemand angefasst hat, gleicht ein kleines Modell
- * mit den Commits seither und dem Ueberblick ab. Was belegt erledigt oder ueberholt ist, schliesst
- * sich (mit Grund, per /offen wieder zu oeffnen); der Rest gilt fuer einen Tag als geprueft.
+ * Zum Start und dann jede Stunde (Server-Sitzungen laufen tagelang): offene Punkte, die seit sechs
+ * Stunden niemand angefasst hat, gleicht ein kleines Modell mit den Commits seither, dem Ueberblick
+ * und den Entscheidungen seither ab. Was belegt erledigt oder ueberholt ist, schliesst sich (mit
+ * Grund, per /offen wieder zu oeffnen); der Rest gilt fuer sechs Stunden als geprueft. Das ersetzt
+ * claude-webs „automatische Klaerung“, die dafuer Turns des Hauptmodells brauchte.
  */
-async function startAbgleich($: EngineInterface) {
-  const jetzt = await $.clock.now()
-  // Was schon lange keine Rolle mehr spielt (auch aus aelteren Fassungen), schliesst sich ohne Frage.
-  const veraltet = await aendere($, l => veraltetSchliessen(l, jetzt))
-  if (veraltet.length > 0) $.ui.toast(`🤖 ${veraltet.length === 1 ? '1 veralteter Punkt' : `${veraltet.length} veraltete Punkte`} geschlossen · /offen zum Wiederöffnen`, { timeoutMs: 6000 })
-  const kandidaten = abgleichKandidaten(await read($, punkteA), jetzt)
-  if (kandidaten.length === 0) return
-  const seit = Math.floor(Math.min(...kandidaten.map(p => p.erstellt)) / 1000)
-  const wurzel = (await $.session.root()).replace(/[\\/]+$/, '')
-  const log = await $.process.run(['git', '-C', wurzel, 'log', `--since=@${seit}`, '-n', '80', '--date=format:%d.%m. %H:%M', '--format=%h %ad %s'])
-    .catch(() => null)
-  const commits = log !== null && log.exitCode === 0 ? log.stdout : ''
-  const r = await $.model.complete({
-    model: modell,
-    system: [{ text: ABGLEICH_AUFTRAG, cache: true }],
-    prompt: abgleichAnfrage(kandidaten, { commits, ueberblick: await read($, ueberblickA), entschieden: await entscheidungenSeit($, seit * 1000) }),
-    maxTokens: 1500,
-    timeoutMs: 45_000,
+async function abgleich($: EngineInterface, anlass: 'start' | 'takt') {
+  if (abgleichLaeuft || turnLaeuft) return
+  abgleichLaeuft = true
+  try {
+    const jetzt = await $.clock.now()
+    // Was schon lange keine Rolle mehr spielt (auch aus aelteren Fassungen), schliesst sich ohne Frage.
+    const veraltet = await aendere($, l => veraltetSchliessen(l, jetzt))
+    if (veraltet.length > 0) $.ui.toast(`🤖 ${veraltet.length === 1 ? '1 veralteter Punkt' : `${veraltet.length} veraltete Punkte`} geschlossen · /offen zum Wiederöffnen`, { timeoutMs: 6000 })
+    const kandidaten = abgleichKandidaten(await read($, punkteA), jetzt)
+    if (kandidaten.length === 0) return
+    const seit = Math.floor(Math.min(...kandidaten.map(p => p.erstellt)) / 1000)
+    const wurzel = (await $.session.root()).replace(/[\\/]+$/, '')
+    const log = await $.process.run(['git', '-C', wurzel, 'log', `--since=@${seit}`, '-n', '80', '--date=format:%d.%m. %H:%M', '--format=%h %ad %s'])
+      .catch(() => null)
+    const commits = log !== null && log.exitCode === 0 ? log.stdout : ''
+    const r = await haiku($, 'abgleich', {
+      model: modell,
+      system: [{ text: ABGLEICH_AUFTRAG, cache: true }],
+      prompt: abgleichAnfrage(kandidaten, { commits, ueberblick: await read($, ueberblickA), entschieden: await entscheidungenSeit($, seit * 1000) }),
+      maxTokens: 1500,
+      timeoutMs: 45_000,
+    })
+    if (!r.isAnswered) {
+      $.ui.log(`offene-punkte: kein Abgleich (${r.reason})`)
+      return
+    }
+    const ergebnisse = liesAbgleich(r.text)
+    if (ergebnisse === null) {
+      $.ui.log('offene-punkte: Antwort des Abgleichs war kein lesbares JSON')
+      return
+    }
+    const nrn = kandidaten.map(p => p.nr ?? -1)
+    const zu = await aendere($, l => abgleichAnwenden(l, nrn, ergebnisse, jetzt))
+    $.ui.log(`offene-punkte: Abgleich (${anlass}): ${kandidaten.length} geprüft, ${zu.length} geschlossen`)
+    if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ abgeglichen`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 8000 })
+  } finally {
+    abgleichLaeuft = false
+  }
+}
+
+/** Der naechste Takt des Abgleichs - als Kette von after statt every, damit ein Neuladen ihn sauber beendet. */
+function abgleichPlanen($: EngineInterface) {
+  abgleichTakt?.cancel()
+  abgleichTakt = $.clock.after(ABGLEICH_TAKT_MS, () => {
+    void abgleich($, 'takt')
+      .catch(fehler => $.ui.log(`offene-punkte: Abgleich fehlgeschlagen (${String(fehler)})`))
+      .finally(() => abgleichPlanen($))
   })
-  if (!r.isAnswered) {
-    $.ui.log(`offene-punkte: kein Startabgleich (${r.reason})`)
-    return
+}
+
+/**
+ * Schreibt den Ueberblick neu - aus dem eigenen Verlauf ($.session.messages(): nur die Texte, keine
+ * Tool-Ergebnisse) per Haiku. Ein Fork des Hauptmodells laese dafuer den ganzen Kontext zum Preis des
+ * Hauptmodells; so kostet es ein paar tausend Haiku-Tokens. Laeuft nach UEBERBLICK_NACH fertigen
+ * Menschen-Turns, nach jeder Compaction, bei /zusammenfassung und auf /offen ueberblick.
+ */
+async function ueberblickErneuern($: EngineInterface, anlass: string): Promise<string> {
+  if (ueberblickLaeuft) return ''
+  ueberblickLaeuft = true
+  try {
+    const nachrichten = await Promise.resolve().then(() => $.session.messages()).catch(() => null)
+    if (!Array.isArray(nachrichten)) return ''
+    const verlauf = verlaufsText(nachrichten as readonly Nachricht[])
+    if (verlauf === '') return ''
+    const r = await haiku($, 'ueberblick', {
+      model: modell,
+      system: [{ text: UEBERBLICK_NEU, cache: true }],
+      prompt: `VERLAUF (älteste Nachricht zuerst):\n\n${verlauf}`,
+      maxTokens: 400,
+      timeoutMs: 45_000,
+    })
+    if (!r.isAnswered) {
+      $.ui.log(`offene-punkte: kein Überblick (${r.reason})`)
+      return ''
+    }
+    const u = ueberblickAus(r.text)
+    if (u === '') return ''
+    await update($, ueberblickA, () => u)
+    await speichern($)
+    fertigeTurns = 0
+    $.ui.log(`offene-punkte: Überblick neu (${anlass})`)
+    return u
+  } finally {
+    ueberblickLaeuft = false
   }
-  const ergebnisse = liesAbgleich(r.text)
-  if (ergebnisse === null) {
-    $.ui.log('offene-punkte: Antwort des Startabgleichs war kein lesbares JSON')
-    return
+}
+
+/**
+ * eingang.txt im Projektordner: je Zeile ein /offen-Befehl ohne das „/offen“, von claude-web oder
+ * einem Skript angehaengt. Die Sitzung fuehrt die Zeilen aus und nimmt sie aus der Datei; was
+ * waehrenddessen dazukam, bleibt stehen. So antwortet claude-web ohne tmux und ohne Modellrunde.
+ */
+async function eingangLesen($: EngineInterface) {
+  if (eingangLaeuft) return
+  eingangLaeuft = true
+  try {
+    const o = await ablageOrt($)
+    if (o === null) return
+    const datei = `${o.ordner}/eingang.txt`
+    const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    const zeilen = eingangZeilen(text)
+    if (zeilen.length === 0) return
+    const ergebnisse: string[] = []
+    for (const z of zeilen) {
+      const r = await offenKommando($, z).catch(fehler => `Fehler: ${String(fehler)}`)
+      ergebnisse.push(`${z} → ${r ?? 'Liste'}`)
+    }
+    const danach = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    await $.fs.write(datei, danach.startsWith(text) ? danach.slice(text.length) : danach)
+      .catch(fehler => $.ui.log(`offene-punkte: eingang.txt nicht geleert (${String(fehler)})`))
+    $.ui.log(`offene-punkte: Eingang: ${ergebnisse.join(' · ')}`)
+    $.ui.toast(`Eingang: ${zeilen.length === 1 ? '1 Befehl' : `${zeilen.length} Befehle`} ausgeführt · /offen`, { timeoutMs: 5000 })
+  } finally {
+    eingangLaeuft = false
   }
-  const nrn = kandidaten.map(p => p.nr ?? -1)
-  const zu = await aendere($, l => abgleichAnwenden(l, nrn, ergebnisse, jetzt))
-  if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ beim Start abgeglichen`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 8000 })
+}
+
+function eingangPlanen($: EngineInterface) {
+  eingangTakt?.cancel()
+  eingangTakt = $.clock.after(EINGANG_TAKT_MS, () => {
+    void eingangLesen($)
+      .catch(fehler => $.ui.log(`offene-punkte: Eingang (${String(fehler)})`))
+      .finally(() => eingangPlanen($))
+  })
 }
 
 /** Was seit diesem Zeitpunkt entschieden wurde, aus den Tagesverlaeufen (auch anderer Sitzungen im Projekt). */
@@ -308,10 +482,12 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
   try {
     const alle = await read($, punkteA)
     const vorher = offene(alle)
-    const r = await $.model.complete({
+    // Nachfassen (Standard): kurzer, strenger Auftrag ohne Ueberblick; „haiku“ liest jede Antwort mit dem vollen.
+    const nachfassenModus = auswertung === 'claude'
+    const r = await haiku($, nachfassenModus ? 'nachfassen' : 'auswertung', {
       model: modell,
-      system: [{ text: AUFTRAG, cache: true }],
-      prompt: anfrage(antworten, eingabe, vorher, await read($, ueberblickA), zuletztGeschlossen(alle)),
+      system: [{ text: nachfassenModus ? NACHFASSEN_AUFTRAG : AUFTRAG, cache: true }],
+      prompt: anfrage(antworten, eingabe, vorher, nachfassenModus ? '' : await read($, ueberblickA), zuletztGeschlossen(alle)),
       maxTokens: 3000,
       timeoutMs: 45_000,
     })
@@ -386,7 +562,35 @@ async function aufnehmen($: EngineInterface, id: string) {
   }))
 }
 
-const teileVon = (punkte: readonly Punkt[]): Teil[] => punkte.map(p => ({ titel: p.titel, text: p.ausstehend?.text ?? '' }))
+const teileVon = (punkte: readonly Punkt[]): Teil[] => punkte.map(p => {
+  const text = p.ausstehend?.text ?? ''
+  // Nur ein Label (Block-Punkt): die Frage kommt dazu, damit Claude den Bezug auch nach einer Compaction kennt.
+  const kurz = text !== '' && p.optionen.some(o => o.antwort === text && o.label === text)
+  return { titel: p.titel, text, ...(kurz ? { frage: p.frage } : {}) }
+})
+
+/** Punkte anlegen, aendern und schliessen - aus dem Werkzeug (Kennung c) oder aus dem Block in der Antwort (b). */
+async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aenderungen: readonly NrAenderung[], marken: readonly Marke[], kennung: 'c' | 'b') {
+  const [jetzt, ab, vorher] = await Promise.all([$.clock.now(), nummernAb($), read($, punkteA)])
+  const vergeben = new Set(vorher.map(p => p.id))
+  let i = 0
+  const neueId = () => {
+    let id: string
+    do id = `${kennung}${jetzt.toString(36)}${(i++).toString(36)}`
+    while (vergeben.has(id))
+    vergeben.add(id)
+    return id
+  }
+  // Erwaehnt sind hier alle: ein Eintrag laesst keinen Punkt altern.
+  const alle = offene(vorher).map(p => p.id)
+  const aktualisiert = aenderungenZuIds(vorher, aenderungen)
+  const zu = await aendere($, l => perMarkeSchliessen(
+    zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt))
+  const bekannt = new Set(vorher.map(p => p.id))
+  const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
+  if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
+  return { angelegt, geaendert: aktualisiert.length, zu, doppelt: neu.length - angelegt.length, nichtOffen: marken.length - zu.length }
+}
 
 const naechsteReihe = (liste: readonly Punkt[]) => Math.max(0, ...liste.map(p => p.ausstehend?.reihe ?? 0)) + 1
 
@@ -552,6 +756,11 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
     // Kein Textfeld (Handy): in der Eingabe vorbereiten; beim Abschicken schliesst sich der Punkt.
     return inEingabe($, punkt, { status: 'erledigt', label: 'eigene Antwort', text: '' })
   }
+  if (wert === ERKLAEREN || wert === INTERVIEW || wert === KLAEREN) {
+    // Nur vorbereitet, der Punkt bleibt offen: der Nutzer sieht die Bitte und schickt sie selbst ab.
+    await eintragen($, bitteZu(wert === ERKLAEREN ? 'erklaeren' : wert === INTERVIEW ? 'interview' : 'klaeren', punkt))
+    return
+  }
   if (wert.startsWith(BEFEHL)) {
     // Nur vorbereitet: der Nutzer sieht die Bitte und schickt sie selbst ab; Claude fuehrt aus. Der Punkt bleibt offen.
     const befehl = befehle(punkt.anleitung)[Number(wert.slice(BEFEHL.length))]
@@ -608,6 +817,9 @@ function auswahl(punkt: Punkt) {
     ...punkt.optionen.map((o, i) => ({ value: String(i), label: o.label })),
     { value: EIGENE, label: 'Eigene Antwort …' },
     ...befehle(punkt.anleitung).map((b, i) => ({ value: `${BEFEHL}${i}`, label: befehlLabel(b) })),
+    { value: ERKLAEREN, label: 'Erklären' },
+    { value: INTERVIEW, label: 'Planungsinterview' },
+    { value: KLAEREN, label: 'Selbst klären' },
     ...(istVeraltet(punkt) ? [{ value: AKTUELL, label: 'Noch aktuell' }] : []),
     { value: SPAETER, label: 'Später' },
     { value: ERLEDIGT, label: 'Schon erledigt' },
@@ -726,6 +938,28 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     const neu = (await read($, punkteA)).find(p => p.id === id)
     return neu === undefined ? 'Punkt nicht angelegt.' : `Punkt ${neu.nr ?? '?'} angelegt: „${neu.titel}“`
   }
+  if (k.art === 'ueberblick') {
+    const u = await ueberblickErneuern($, 'befehl')
+    return u !== '' ? `Überblick neu:\n${u}` : 'Überblick nicht erneuert (kein Verlauf, oder Haiku gerade nicht erlaubt).'
+  }
+  if (k.art === 'klaeren') {
+    const liste = fragbar(await read($, punkteA), await sicht($))
+    if (liste.length === 0) return 'Es ist nichts offen.'
+    const text = klaerungsBitte(liste)
+    $.clock.after(0, () => {
+      void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: Klärung nicht gesendet (${String(fehler)})`))
+    })
+    return `Klärung von ${liste.length} ${liste.length === 1 ? 'Punkt' : 'Punkten'} geht an Claude.`
+  }
+  if (k.art === 'alle') {
+    // Sammelschluss ohne Modellrunde (claude-web, Aufraeumen); im Verlauf je Punkt nur eine Kurzzeile.
+    const ids = new Set(fragbar(await read($, punkteA), await sicht($)).map(p => p.id))
+    if (ids.size === 0) return 'Es ist nichts offen.'
+    const status = k.tun === 'weg' ? 'verworfen' as const : 'erledigt' as const
+    const ergebnis = `gesammelt ${status}${k.grund !== '' ? ` – ${k.grund}` : ''}`
+    await aendere($, liste => liste.map(p => (ids.has(p.id) ? { ...p, status, ergebnis } : p)))
+    return `${ids.size} ${ids.size === 1 ? 'Punkt' : 'Punkte'} ${status}.`
+  }
   const alle = await read($, punkteA)
   const punkt = offene(alle).find(p => p.nr === k.nummer)
   // Wieder öffnen, was ohne Zutun geschlossen wurde (claude-web: Knopf „wieder öffnen“)
@@ -739,6 +973,12 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     return beantwortet !== undefined
       ? `„${beantwortet.titel}“ ist schon beantwortet und geht mit den übrigen Antworten an Claude.`
       : `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
+  }
+  if (k.tun === 'antwort') {
+    // Freie Antwort (auch von claude-web per tmux): schliesst den Punkt und geht sofort, ohne zweiten Befehl.
+    await antworten($, punkt, { status: 'erledigt', label: 'eigene Antwort', text: k.text })
+    await senden($)
+    return `„${punkt.titel}“: Antwort geht an Claude.`
   }
   if (k.tun === 'optionen') {
     // Mehrere Antworten zusammen (Punkte mit Mehrfachauswahl): Saetze hintereinander als eine Antwort
@@ -778,6 +1018,8 @@ export const register: Register = (on, options) => {
   mindestLaenge = Number(options.mindestLaenge ?? 400)
   fragenAnzeigen = options.fragenAnzeigen !== false
   auswertung = options.auswertung === 'haiku' ? 'haiku' : 'claude'
+  eintrag = options.eintrag === 'werkzeug' ? 'werkzeug' : 'block'
+  budgetGrenze = Number(options.haikuBisProzent ?? BUDGET_GRENZE) || BUDGET_GRENZE
   werkzeugBenutzt = false
   warteschlange = []
   laeuft = false
@@ -786,18 +1028,31 @@ export const register: Register = (on, options) => {
   unterwegs.clear()
   sitzung = ''
   claudeKennt = ''
-  seitListe = 0
+  interaktiv = true
+  eingabeArt = 'mensch'
+  turnLaeuft = false
+  abgleichLaeuft = false
+  abgleichTakt = null
+  ueberblickLaeuft = false
+  fertigeTurns = 0
+  eingangTakt = null
+  eingangLaeuft = false
 
   on('session.start', async ($, e, next) => {
+    // Ohne Menschen davor (claude -p, SDK) bleibt der Mod still: kein Werkzeug, kein Hinweis, kein Haiku -
+    // nur die Datei und Claudes Marken. Das spart in Skript-Laeufen jede Anfrage rund 1.000 Tokens.
+    interaktiv = e.isInteractive !== false
+    turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen neu <Text> legt einen Punkt an, /offen leeren räumt die Liste',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 antwort <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen leeren',
     })
     await $.command.register({
       name: 'zusammenfassung',
       description: 'Fasst die ganze Sitzung zusammen: Ziel, Erledigtes, was du noch tun musst (mit Befehlen), offene Entscheidungen',
     })
-    if (auswertung === 'claude') {
+    // Das Werkzeug nur auf Wunsch: im Standard (Block) spart das rund 800 Tokens in jeder Anfrage.
+    if (auswertung === 'claude' && eintrag === 'werkzeug' && interaktiv) {
       await $.tool.register({ name: WERKZEUG, description: WERKZEUG_BESCHREIBUNG, inputSchema: WERKZEUG_SCHEMA, isDeferred: false })
         .catch(fehler => $.ui.log(`offene-punkte: Werkzeug nicht registriert (${String(fehler)})`))
     }
@@ -812,13 +1067,34 @@ export const register: Register = (on, options) => {
     const ab = await nummernAb($)
     await update($, punkteA, l => nummerieren(l, ab))
     await zeigeStatus($)
-    $.clock.after(0, () => {
-      void startAbgleich($).catch(fehler => $.ui.log(`offene-punkte: Startabgleich fehlgeschlagen (${String(fehler)})`))
-    })
+    if (interaktiv) {
+      $.clock.after(0, () => {
+        void abgleich($, 'start').catch(fehler => $.ui.log(`offene-punkte: Abgleich fehlgeschlagen (${String(fehler)})`))
+        void eingangLesen($).catch(fehler => $.ui.log(`offene-punkte: Eingang (${String(fehler)})`))
+      })
+      abgleichPlanen($)
+      eingangPlanen($)
+    }
     // Nach einem Neuladen des Plugins: was gesammelt wartete, wartet weiter (der Zeitgeber ist neu).
     await weiter($).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     return next(e)
   })
+
+  on('turn.start', async (_, e, next) => {
+    turnLaeuft = true
+    return next(e)
+  })
+
+  // Nach einer Compaction kennt Claude die Liste nicht mehr sicher: mit dem naechsten Prompt kommt sie wieder.
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agentId === undefined && !('skip' in r && r.skip !== undefined)) {
+      claudeKennt = ''
+      // Der Ueberblick aus dem komprimierten Verlauf: die Zusammenfassung der Engine ist jetzt Teil davon.
+      if (interaktiv) $.clock.after(0, () => void ueberblickErneuern($, 'compaction').catch(fehler => $.ui.log(`offene-punkte: Überblick (${String(fehler)})`)))
+    }
+    return r
+  }).catch((_, e, next) => next(e))
 
   // Nach /clear startet keine neue Sitzung im Sinne von session.start: dort die Datei nachladen.
   on('session.end', async ($, e, next) => {
@@ -826,6 +1102,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       ort = null
       claudeKennt = ''
+      eingabeArt = 'mensch'
       zeitgeber?.cancel()
       zeitgeber = null
       vorschlag = ''
@@ -846,9 +1123,23 @@ export const register: Register = (on, options) => {
     return r
   })
 
+  // Eingaben von Maschinen: Peer-Nachrichten, Zeitplaene, der SDK-Host, Kanaele. Was Claude darauf
+  // antwortet, erzeugt keine Punkte und laesst keinen altern - nur seine Marken zaehlen.
+  const MASCHINEN = new Set(['sdk', 'task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'channel'])
+
   on('prompt.submit', async ($, e, next) => {
-    // Nur was der Nutzer selbst schreibt - eine Antwort aus der Auswahl kennt Haiku schon.
-    if (e.origin.kind !== 'composer') return next(e)
+    if (MASCHINEN.has(e.origin.kind)) {
+      eingabeArt = 'maschine'
+      return next(e)
+    }
+    // Nur was der Nutzer selbst schreibt, an der Tastatur oder am Handy - eine Antwort aus der Auswahl kennt
+    // der Mod schon. Die eigene Klaerung (/offen klaeren) zaehlt wie claude-webs Klaerung als Maschine.
+    if (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge') {
+      if (istMaschinenEingabe(e.text)) eingabeArt = 'maschine'
+      return next(e)
+    }
+    // claude-webs Klaerung kommt per tmux wie getippt an: wie eine Maschine behandeln.
+    eingabeArt = istMaschinenEingabe(e.text) ? 'maschine' : 'mensch'
     // Selbst abgeschickt (z. B. Enter auf die vorgelegten Antworten): kein Countdown mehr.
     vorschlag = ''
     ticker?.cancel()
@@ -857,20 +1148,19 @@ export const register: Register = (on, options) => {
     const punkte = await read($, punkteA).catch((): Punkt[] => [])
     const mit = gesammelt(punkte)
     const eingabe = ausstehende(punkte, 'eingabe')
+    // Selbst geschriebene Antworten („Zum offenen Punkt „Titel“: …“, auch von claude-web per tmux):
+    // die Punkte schliessen sich mit dieser Nachricht, ohne zweiten Befehl.
+    const getippt = eingetippteAntworten(e.text, punkte)
     // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
     const text = mit.length > 0 ? `${sammelText(teileVon(mit))}\n\n${e.text}` : e.text
     letzteEingabe = text
-    // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (oder lange her sind): Claude
-    // kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist.
-    const liste = listeFuerClaude(punkte, await sicht($))
-    seitListe++
-    const mitListe = liste !== '' && (liste !== claudeKennt || seitListe >= LISTE_ERNEUT_NACH)
-    if (mitListe) {
-      claudeKennt = liste
-      seitListe = 0
-    }
+    // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (und nach einer Compaction):
+    // Claude kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist.
+    const liste = interaktiv ? listeFuerClaude(punkte, await sicht($)) : ''
+    const mitListe = liste !== '' && liste !== claudeKennt
+    if (mitListe) claudeKennt = liste
     const kontext = mitListe ? { context: [...(e.context ?? []), liste] } : {}
-    if (mit.length + eingabe.length === 0) return next({ ...e, ...kontext })
+    if (mit.length + eingabe.length + getippt.length === 0) return next({ ...e, ...kontext })
 
     zeitgeber?.cancel()
     zeitgeber = null
@@ -886,17 +1176,26 @@ export const register: Register = (on, options) => {
         continue
       }
       ids.add(p.id)
-      ergebnisse.set(p.id, t !== '' ? `${p.ausstehend?.ergebnis} – „${t}“` : String(p.ausstehend?.ergebnis))
+      // Was der Nutzer ergaenzt hat, kommt hinter die Wahl - nicht die Wahl selbst noch einmal.
+      ergebnisse.set(p.id, t !== '' && t !== p.ausstehend?.text ? `${p.ausstehend?.ergebnis} – „${t}“` : String(p.ausstehend?.ergebnis))
     }
     const r = await next({ ...e, text, ...kontext })
     const angekommen = !('drop' in r && r.drop !== undefined)
     // Nicht hier warten: das Schliessen schreibt Dateien.
     $.clock.after(0, () => {
-      void aendere($, l => (angekommen ? zuruecknehmen(abschliessen(l, ids, ergebnisse), weg) : zuruecknehmen(l)))
-        .catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
+      void aendere($, l => {
+        if (!angekommen) return zuruecknehmen(l)
+        const selbst = new Map(getippt.map(g => [g.id, g.text]))
+        const mitSelbst = l.map(p => {
+          const t = selbst.get(p.id)
+          if (t === undefined || p.status !== 'offen' || p.ausstehend !== undefined) return p
+          return { ...p, status: 'erledigt' as const, ergebnis: t !== '' ? `eigene Antwort – „${t.slice(0, 300)}“` : 'eigene Antwort' }
+        })
+        return zuruecknehmen(abschliessen(mitSelbst, ids, ergebnisse), weg)
+      }).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     })
     return r
-  })
+  }).catch((_, e, next) => next(e))
 
   // Tippt der Nutzer in die vorgelegten Antworten, laeuft kein Countdown mehr: er schickt selbst ab.
   on('prompt.edit', async ($, e, next) => {
@@ -909,43 +1208,33 @@ export const register: Register = (on, options) => {
 
   // Claude schließt selbst: „erledigt: #3“ in der Antwort schließt den Punkt sofort (auch bei kurzen Antworten).
   on('prompt.context', async ($, e, next) => {
+    if (!interaktiv) return next(e)
     const r = await next(e)
-    return { ...r, blocks: [...r.blocks, { name: 'offenePunkte', text: auswertung === 'claude' ? HINWEIS_WERKZEUG : HINWEIS_CLAUDE }] }
+    const hinweis = auswertung !== 'claude' ? HINWEIS_CLAUDE : eintrag === 'block' ? HINWEIS_BLOCK : HINWEIS_WERKZEUG
+    return { ...r, blocks: [...r.blocks, { name: 'offenePunkte', text: hinweis }] }
   })
 
   // Claude legt Punkte selbst an und schliesst sie; die Antwort nennt die vergebenen Nummern.
   on('tool.call', { tool: WERKZEUG_VOLL }, async ($, e) => {
+    // Subagenten fuehren keine Punkte: ihre Fragen gehoeren in ihre Abschlussmeldung, die Hauptsitzung traegt ein.
+    if (e.agentId !== undefined) return { result: 'Offene Punkte führt nur die Hauptsitzung. Nenne, was der Nutzer entscheiden oder tun muss, in deiner Abschlussmeldung.' }
     werkzeugBenutzt = true
-    const { neu, marken } = werkzeugLesen(e.input)
-    if (neu.length === 0 && marken.length === 0) return { deny: 'Nichts übergeben: "neu" (Punkte mit titel, art, frage, optionen) oder "schliessen" (nr).' }
-    const [jetzt, ab, vorher] = await Promise.all([$.clock.now(), nummernAb($), read($, punkteA)])
-    const vergeben = new Set(vorher.map(p => p.id))
-    let i = 0
-    const neueId = () => {
-      let id: string
-      do id = `c${jetzt.toString(36)}${(i++).toString(36)}`
-      while (vergeben.has(id))
-      vergeben.add(id)
-      return id
-    }
-    // Erwaehnt sind hier alle: ein Aufruf des Werkzeugs laesst keinen Punkt altern.
-    const alle = offene(vorher).map(p => p.id)
-    const zu = await aendere($, l => perMarkeSchliessen(
-      zusammenfuehren(l, { neu, aktualisiert: [], erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt))
-    const bekannt = new Set(vorher.map(p => p.id))
-    const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
+    const { neu, aenderungen, marken } = werkzeugLesen(e.input)
+    if (neu.length + aenderungen.length + marken.length === 0) return { deny: 'Nichts übergeben: "neu" (Punkte mit titel, art, frage, optionen), "aktualisieren" (nr und Felder) oder "schliessen" (nr).' }
+    const r = await punkteEintragen($, neu, aenderungen, marken, 'c')
     const teile = [
-      angelegt.length > 0 ? `angelegt: ${angelegt.map(p => `#${p.nr ?? '?'} ${p.titel}`).join(', ')}` : '',
-      neu.length > angelegt.length ? `${neu.length - angelegt.length} schon vorhanden (gleicher Titel offen oder kürzlich geschlossen)` : '',
-      zu.length > 0 ? `geschlossen: ${zu.map(p => `#${p.nr ?? '?'}`).join(', ')}` : '',
-      marken.length > zu.length ? `${marken.length - zu.length} Nummer(n) nicht offen` : '',
+      r.angelegt.length > 0 ? `angelegt: ${r.angelegt.map(p => `#${p.nr ?? '?'} ${p.titel}`).join(', ')}` : '',
+      r.doppelt > 0 ? `${r.doppelt} schon vorhanden (gleicher Titel offen oder kürzlich geschlossen)` : '',
+      r.geaendert > 0 ? `geändert: ${r.geaendert}` : '',
+      r.zu.length > 0 ? `geschlossen: ${r.zu.map(p => `#${p.nr ?? '?'}`).join(', ')}` : '',
+      r.nichtOffen > 0 ? `${r.nichtOffen} Nummer(n) nicht offen` : '',
     ].filter(t => t !== '')
-    if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
     return { result: `Offene Punkte: ${teile.join('; ') || 'nichts geändert'}. Der Nutzer bekommt neue Punkte über der Eingabe als Auswahl gestellt.` }
-  })
+  }).catch(() => ({ deny: 'offene-punkte: Eintrag fehlgeschlagen, bitte noch einmal.' }))
 
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
+    if (e.agentId === undefined) turnLaeuft = false
     const marken = e.agentId === undefined && e.reason === 'answer' ? schlussMarken(e.answer) : []
     if (marken.length > 0) {
       $.clock.after(0, () => {
@@ -958,7 +1247,17 @@ export const register: Register = (on, options) => {
     }
     const benutzt = werkzeugBenutzt
     if (e.agentId === undefined) werkzeugBenutzt = false
-    if (auswertung === 'claude' && e.agentId === undefined && e.reason === 'answer') {
+    // Der Block in der Antwort: Punkte anlegen und aendern, ohne Werkzeug und ohne weitere Modellrunde.
+    const block = e.agentId === undefined && e.reason === 'answer' ? blockLesen(e.answer) : { neu: [], aenderungen: [] }
+    const blockDa = block.neu.length + block.aenderungen.length > 0
+    if (blockDa) {
+      $.clock.after(0, () => {
+        void punkteEintragen($, block.neu, block.aenderungen, [], 'b').catch(fehler => $.ui.log(`offene-punkte: Block (${String(fehler)})`))
+      })
+    }
+    // Nach Maschinen-Eingaben (Peer, Zeitplan, Klaerung) und ohne Menschen davor: nur Marken und Block.
+    const mensch = interaktiv && eingabeArt === 'mensch'
+    if (mensch && auswertung === 'claude' && e.agentId === undefined && e.reason === 'answer') {
       const antwort = e.answer
       const eingabe = letzteEingabe
       $.clock.after(0, () => {
@@ -966,12 +1265,15 @@ export const register: Register = (on, options) => {
           const jetzt = await $.clock.now()
           const alt = await aendere($, l => altern(l, antwort, jetzt))
           if (alt.length > 0) $.ui.toast(alt.map(p => `🤖 „${p.titel}“ geschlossen (${p.auto?.grund})`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
-          // Claude hat gefragt, aber nichts eingetragen: Haiku fasst nach.
-          if (!benutzt && nachfassen(antwort)) await auswerten($, [antwort], eingabe)
+          // Claude hat gefragt, aber nichts eingetragen (weder Werkzeug noch Block): Haiku fasst nach.
+          if (!benutzt && !blockDa && nachfassen(antwort)) await auswerten($, [antwort], eingabe)
+          // Alle UEBERBLICK_NACH Antworten den Ueberblick aus dem Verlauf neu schreiben.
+          fertigeTurns++
+          if (fertigeTurns >= UEBERBLICK_NACH) await ueberblickErneuern($, 'takt')
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }
-    if (auswertung === 'haiku' && e.agentId === undefined && e.reason === 'answer' && auswertenNoetig(e.answer, mindestLaenge)) {
+    if (mensch && auswertung === 'haiku' && e.agentId === undefined && e.reason === 'answer' && auswertenNoetig(e.answer, mindestLaenge)) {
       const antwort = e.answer
       const eingabe = letzteEingabe
       // Ausserhalb dieses Hooks: die Auswertung soll das Ende der Antwort nicht aufhalten.
@@ -987,16 +1289,21 @@ export const register: Register = (on, options) => {
     if (antwort !== null) return { text: antwort }
 
     await update($, ausgeblendetA, () => false)
-    await $.ui.open({ id: PANE, title: 'Offene Punkte' })
+    const platz = await $.ui.open({ id: PANE, title: 'Offene Punkte' })
     const liste = offene(await read($, punkteA))
     const ueberblick = await read($, ueberblickA)
     const s = await sicht($)
     const o = await ablageOrt($)
+    const aktiv = liste.filter(p => !ruht(p, s))
+    const ruhend = liste.filter(p => ruht(p, s))
+    // Steht das Pane, zeigt es alles - die Befehlsausgabe landet sonst als Text im Kontext des Modells.
+    if (platz.isPlaced) {
+      const stand = liste.length === 0 ? 'Nichts offen' : `${aktiv.length} offen${ruhend.length > 0 ? `, ${ruhend.length} zurückgelegt` : ''}`
+      return { text: `${stand} – alles im Pane „Offene Punkte“.` }
+    }
     const kopfzeile = ueberblick !== '' ? `Überblick:\n${ueberblick}\n\n` : ''
     const fuss = o !== null ? `\n\nDatei: ${o.ordner}/offen.md · Verlauf: antworten-JJJJ-MM-TT.md` : ''
     if (liste.length === 0) return { text: `${kopfzeile}Nichts offen.${fuss}` }
-    const aktiv = liste.filter(p => !ruht(p, s))
-    const ruhend = liste.filter(p => ruht(p, s))
 
     const aktivText = aktiv.length === 0 ? 'Gerade ist nichts dran.' : aktiv.map((p, i) => {
       const anleitung = (p.anleitung ?? '') !== '' ? `\n${p.anleitung.replace(/^/gm, '   ')}` : ''
@@ -1009,20 +1316,18 @@ export const register: Register = (on, options) => {
     const autoText = auto.length === 0 ? '' : `\n\nAutomatisch erledigt (${auto.length}, /offen <Nr> aktuell öffnet wieder):\n` + auto
       .map(p => `🤖 ${p.nr ?? '?'}. ${p.titel} – ${p.auto?.grund}`).join('\n')
     return {
-      text: kopfzeile + aktivText + ruhendText + autoText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen neu <Text>${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + autoText + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären · /offen neu <Text>${fuss}`,
     }
   })
 
-  // Die ganze Sitzung zusammenfassen: eine Frage an das Hauptmodell ueber den eigenen
-  // Verlauf (aus dem Prompt-Cache), ohne Werkzeuge. Daneben schreibt es den Ueberblick neu -
-  // der von Haiku fortgeschriebene kann veraltet sein (claude-web: Knopf "Aktualisieren").
+  // Die ganze Sitzung zusammenfassen: ein Fork des Hauptmodells ueber den eigenen Verlauf (aus dem
+  // Prompt-Cache), ohne Werkzeuge. Der Ueberblick kommt daneben von Haiku aus den Texten des Verlaufs -
+  // nicht als zweiter Fork, der den ganzen Kontext noch einmal laese (claude-web: Knopf "Aktualisieren").
   on('command.run', { command: 'zusammenfassung' }, async $ => {
-    const [r, u] = await Promise.all([$.model.fork({ prompt: ZUSAMMENFASSUNG }), $.model.fork({ prompt: UEBERBLICK_NEU })])
-    const ueberblick = u.isAnswered ? ueberblickAus(u.text) : ''
-    if (ueberblick !== '') {
-      await update($, ueberblickA, () => ueberblick)
-      await speichern($)
-    }
+    const [r] = await Promise.all([
+      $.model.fork({ prompt: ZUSAMMENFASSUNG }),
+      ueberblickErneuern($, 'zusammenfassung').catch(fehler => $.ui.log(`offene-punkte: Überblick (${String(fehler)})`)),
+    ])
     if (r.isAnswered) return { text: r.text }
     if (r.reason === 'nothing-to-fork') return { text: 'Noch nichts zusammenzufassen – die Sitzung hat noch keine Antwort.' }
     return { text: `Zusammenfassung nicht möglich (${r.reason}).` }
@@ -1112,7 +1417,7 @@ export const register: Register = (on, options) => {
     ])
     const liste = offene(punkte).filter(p => !ruht(p, s))
     const ruhend = offene(punkte).filter(p => ruht(p, s))
-    const fertig = punkte.filter(p => p.status !== 'offen').slice(-8).reverse()
+    const fertig = zuletztFertig(punkte)
 
     return (
       <Box flexDirection="column">
