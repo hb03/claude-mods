@@ -114,7 +114,10 @@ test('ein Block in der Antwort legt den Punkt an - ohne Haiku; die Wahl schickt 
   expect(await ui.find({ type: 'Text', text: /Hast du das Token im Abholer eingetragen\?/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /■ Blockiert/ })).toBeDefined()
   const sel = await ui.find({ type: 'Select' })
-  await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
+  // Die erste Antwort steht als Knopf "a) …" neben dem Menü
+  const knopfA = await ui.find({ type: 'Button', text: /^a\) / })
+  expect(knopfA).toBeDefined()
+  await ui.press({ key: String((knopfA as { key?: string }).key) })
   await uhr.advance(5_000)
   expect(gesendet).toEqual(['Zum offenen Punkt „Geräte-Token eintragen“ (Hast du das Token im Abholer eingetragen?): eingetragen, Test starten'])
   await ui.unmount()

@@ -939,15 +939,25 @@ function wahl($: EngineInterface, els: Els, surface: string, key: string, punkt:
       </Box>
     )
   }
+  // Die Antworten des Punkts stehen als Knoepfe da (man sieht, was a und b ist); das Menue hat nur den Rest.
+  const feste = optionen.slice(0, punkt.optionen.length)
   const liste = surface !== 'mobile' && 'Select' in els
     ? (
-      <els.Select
-        key={key}
-        label="Antwort"
-        options={[{ value: KEINE, label: 'bitte wählen' }, ...optionen]}
-        value={KEINE}
-        onSelect={(wert: string) => void (wert === KEINE ? undefined : waehlen($, punkt, wert, mitTextfeld))}
-      />
+      <Box key={key} flexDirection="row" flexWrap="wrap">
+        {feste.map(o => (
+          <Box key={`${key}-${o.value}`} flexDirection="row">
+            <Button key={`${key}-k${o.value}`} label={o.label} onPress={() => void waehlen($, punkt, o.value, mitTextfeld)} />
+            <Text> </Text>
+          </Box>
+        ))}
+        <els.Select
+          key={`${key}-menue`}
+          label={feste.length > 0 ? '' : 'Antwort'}
+          options={[{ value: KEINE, label: feste.length > 0 ? 'mehr …' : 'bitte wählen' }, ...optionen.slice(feste.length)]}
+          value={KEINE}
+          onSelect={(wert: string) => void (wert === KEINE ? undefined : waehlen($, punkt, wert, mitTextfeld))}
+        />
+      </Box>
     )
     : (
       <Box key={key} flexDirection="row" flexWrap="wrap">

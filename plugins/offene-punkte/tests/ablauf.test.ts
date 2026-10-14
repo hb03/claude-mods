@@ -66,7 +66,10 @@ test('nach einer Antwort steht die offene Frage über der Eingabe, die Wahl geht
 
   const sel = await ui.find({ type: 'Select' })
   expect(sel).toBeDefined()
-  await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
+  // Die erste Antwort steht als Knopf "a) …" neben dem Menü
+  const knopfA = await ui.find({ type: 'Button', text: /^a\) / })
+  expect(knopfA).toBeDefined()
+  await ui.press({ key: String((knopfA as { key?: string }).key) })
   await uhr.advance(5_000)
   expect(gesendet).toEqual(['Zum offenen Punkt „Freigabe zum Ausrollen“: Ja, rolle Stufe 1 aus.'])
   await ui.unmount()

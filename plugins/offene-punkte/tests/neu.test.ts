@@ -191,7 +191,10 @@ test('Punkte landen in offen.md, Antworten mit Abwägung im Tagesverlauf, die Au
   expect((sel as { props?: { value?: string } }).props?.value).toBe('__keine')
   await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '__keine' } as never)
   expect(dateien.get('/projekt/offene-punkte/offen.md')).toContain('### 1. Ausrollen')
-  await $.ui.select({ plugin: 'offene-punkte', key: String((sel as { key?: string }).key), value: '0' } as never)
+  // Die erste Antwort steht als Knopf "a) …" neben dem Menü
+  const knopfA = await ui.find({ type: 'Button', text: /^a\) / })
+  expect(knopfA).toBeDefined()
+  await ui.press({ key: String((knopfA as { key?: string }).key) })
   await ui.unmount()
   // Erst wenn die Antwort bei Claude ist (alle beantwortet: nach 5 s), schließt sich der Punkt.
   await uhr.advance(5_000)
