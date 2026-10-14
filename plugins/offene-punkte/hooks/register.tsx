@@ -5,7 +5,7 @@ import type { Ausstehend, Option, Punkt, Warnung } from '../types'
 import {
   AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage, kurzNummern,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
-  hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
+  hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, nichtsFragbar, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
   HINWEIS_CLAUDE, HINWEIS_WERKZEUG, autoErledigt, schlussMarken, perMarkeSchliessen, markenHinweis, markenOhneTreffer,
   WERKZEUG, WERKZEUG_BESCHREIBUNG, WERKZEUG_SCHEMA, altern, nachfassen, werkzeugLesen,
@@ -549,7 +549,7 @@ async function auswerten($: EngineInterface, antworten: string[], eingabe: strin
     const ab = await nummernAb($)
     // Bei "claude" altert altern() je Antwort; das Nachfassen soll nicht ein zweites Mal zaehlen.
     const mitBezug = auswertung === 'claude' ? { ...a, erwaehnt: [...a.erwaehnt, ...vorher.map(p => p.id)] } : a
-    const geschlossen = await aendere($, alt => zusammenfuehren(alt, mitBezug, jetzt, neueId, ab))
+    const geschlossen = await aendere($, alt => zusammenfuehren(alt, mitBezug, jetzt, neueId, ab, sitzung))
 
     const bekannt = new Set(vorher.map(p => p.id))
     const neu = offene(await read($, punkteA)).filter(p => !bekannt.has(p.id)).length
@@ -620,7 +620,7 @@ async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aende
   const aktualisiert = aenderungenZuIds(vorher, aenderungen)
   const abgelehnt = abgelehnteAenderungen(vorher, aenderungen)
   const zu = await aendere($, l => perMarkeSchliessen(
-    zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt, sitzung))
+    zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab, sitzung), marken, jetzt, sitzung))
   const bekannt = new Set(vorher.map(p => p.id))
   const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
   if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
@@ -1102,8 +1102,15 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     return u !== '' ? `Überblick neu:\n${u}` : 'Überblick nicht erneuert (kein Verlauf, oder Haiku gerade nicht erlaubt).'
   }
   if (k.art === 'klaeren') {
-    const liste = fragbar(await read($, punkteA), await sicht($))
-    if (liste.length === 0) return 'Es ist nichts offen.'
+    const s = await sicht($)
+    const punkte = await read($, punkteA)
+    // alle: auch Zurückgelegtes und Punkte anderer (oft längst beendeter) Sitzungen - die werden dafür
+    // übernommen, sonst prallten Claudes Marken an ihnen ab („gehört einer anderen Sitzung“).
+    const liste = k.alle ? offene(punkte) : fragbar(punkte, s)
+    if (liste.length === 0) return nichtsFragbar(punkte, s, ', /offen klären alle übernimmt und klärt sie')
+    const fremde = new Set(liste.filter(p => fremd(p, s.sitzung)).map(p => p.id))
+    if (fremde.size > 0) await aendere($, l => l.map(p => (fremde.has(p.id) ? { ...p, sitzung } : p)))
+    const uebrig = k.alle ? 0 : offene(punkte).length - liste.length
     const text = klaerungsBitte(liste)
     // Ein eigener Submit laeuft nicht durch den eigenen prompt.submit-Hook: die Antwort darauf gilt
     // als Maschinen-Turn (nur Marken und Block, kein Nachfassen, kein Altern).
@@ -1111,12 +1118,15 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     $.clock.after(0, () => {
       void $.prompt.submit({ text, asUser: true }).catch(fehler => $.ui.log(`offene-punkte: Klärung nicht gesendet (${String(fehler)})`))
     })
-    return `Klärung von ${liste.length} ${liste.length === 1 ? 'Punkt' : 'Punkten'} geht an Claude.`
+    const zusatz = fremde.size > 0 ? ` (${fremde.size} aus anderen Sitzungen hierher übernommen)`
+      : uebrig > 0 ? ` (${uebrig} weitere aus anderen Sitzungen oder zurückgelegt: /offen klären alle)` : ''
+    return `Klärung von ${liste.length} ${liste.length === 1 ? 'Punkt' : 'Punkten'} geht an Claude${zusatz}.`
   }
   if (k.art === 'alle') {
     // Sammelschluss ohne Modellrunde (claude-web, Aufraeumen); im Verlauf je Punkt nur eine Kurzzeile.
-    const ids = new Set(fragbar(await read($, punkteA), await sicht($)).map(p => p.id))
-    if (ids.size === 0) return 'Es ist nichts offen.'
+    const [punkte, s] = await Promise.all([read($, punkteA), sicht($)])
+    const ids = new Set(fragbar(punkte, s).map(p => p.id))
+    if (ids.size === 0) return nichtsFragbar(punkte, s, ', /offen <Nr> erledigt|weg schließt einzelne')
     const status = k.tun === 'weg' ? 'verworfen' as const : 'erledigt' as const
     const ergebnis = `gesammelt ${status}${k.grund !== '' ? ` – ${k.grund}` : ''}`
     await aendere($, liste => liste.map(p => (ids.has(p.id) ? { ...p, status, ergebnis } : p)))
@@ -1219,7 +1229,7 @@ export const register: Register = (on, options) => {
     turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären [alle], /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
     })
     await $.command.register({ name: 'erledigt', description: 'Kurzform: /erledigt 2 (oder 2 3) schließt offene Punkte wie /offen 2 erledigt' })
     await $.command.register({ name: 'weg', description: 'Kurzform: /weg 2 (oder 2 3) verwirft offene Punkte wie /offen 2 weg' })
@@ -1281,6 +1291,8 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       ort = null
       claudeKennt = ''
+      // Rückmeldungen zur alten Unterhaltung („Dein Block hat angelegt: #79“) gehören nicht in die neue.
+      hinweiseFuerClaude = []
       eingabeArt = 'mensch'
       zeitgeber?.cancel()
       zeitgeber = null
@@ -1543,7 +1555,7 @@ export const register: Register = (on, options) => {
     const gedankenAbschnitt = gedanken.length === 0 ? '' : `\n\nGedanken (${gedanken.length}, /offen gedanke <Nr> senden|interview|punkt):\n` + gedanken
       .map(x => `💭 G${x.nr} · ${x.vermerk}: ${gedankeKurz(x, 100)}`).join('\n')
     return {
-      text: kopfzeile + aktivText + ruhendText + autoText + gedankenAbschnitt + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären · /offen neu <Text> · /offen gedanke <Text>${fuss}`,
+      text: kopfzeile + aktivText + ruhendText + autoText + gedankenAbschnitt + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären [alle] · /offen neu <Text> · /offen gedanke <Text>${fuss}`,
     }
   })
 

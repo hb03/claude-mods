@@ -12,7 +12,7 @@ export const ANGEBOT_VERFALL = 4
  * Rückfall, wenn die eigene plugin.json nicht lesbar ist; sonst gilt, was beim Start aus ihr gelesen
  * wurde (laufendeVersionSetzen). Steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt.
  */
-export const VERSION = '0.16.8'
+export const VERSION = '0.16.9'
 let laufend = VERSION
 /** Die Fassung, die gerade läuft: aus der plugin.json im geladenen Ordner, sonst VERSION. */
 export const laufendeVersion = (): string => laufend
@@ -425,7 +425,7 @@ export const schluessel = (s: string): string => s.toLowerCase().replace(/[^\p{L
  * neue anhängen (ein Punkt mit gleichem Titel wie ein offener kommt nicht doppelt).
  * Offene Punkte ohne Bezug in dieser Antwort zählen einen Schritt Richtung veraltet.
  */
-export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: number, neueId: () => string, ab = 0): Punkt[] {
+export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: number, neueId: () => string, ab = 0, sitzung = ''): Punkt[] {
   const erledigt = new Set(a.erledigt)
   const aenderungen = new Map(a.aktualisiert.map(x => [x.id, x]))
   const bezug = new Set([...a.erwaehnt, ...aenderungen.keys()])
@@ -462,7 +462,8 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
     const s = schluessel(n.titel)
     if (vorhanden.has(s)) continue
     vorhanden.add(s)
-    liste.push({ id: neueId(), ...n, status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt })
+    // Mit Sitzung: ohne sie hielt der Abgleich einer anderen Sitzung den Punkt für „unbekannt“ (fremd für alle).
+    liste.push({ id: neueId(), ...n, status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: jetzt, ...(sitzung !== '' ? { sitzung } : {}) })
   }
 
   return nummerieren(begrenzen(veraltetSchliessen(liste, jetzt)), ab)
@@ -865,8 +866,9 @@ export type Kommando =
   | { art: 'liste' }
   | { art: 'leeren' }
   | { art: 'senden' }
-  /** Claude soll die offenen Punkte selbst durchgehen (erledigt/überholt per Marke), ohne sie neu zu formulieren. */
-  | { art: 'klaeren' }
+  /** Claude soll die offenen Punkte selbst durchgehen (erledigt/überholt per Marke), ohne sie neu zu formulieren;
+   *  alle: auch zurückgelegte und die anderer Sitzungen (die werden dafür übernommen). */
+  | { art: 'klaeren'; alle: boolean }
   /** Den Überblick aus dem Verlauf neu schreiben lassen (Haiku). */
   | { art: 'ueberblick' }
   /** Gedanken: notieren, zeigen, prüfen lassen, einen senden / ins Interview / als Punkt / erledigt / weg. */
@@ -912,7 +914,8 @@ export function kommando(args: string): Kommando {
   if (alle !== null) return { art: 'alle', tun: /^(weg|verwerfen)$/i.test(alle[1] ?? '') ? 'weg' : 'erledigt', grund: (alle[2] ?? '').trim() }
   const a = args.trim().toLowerCase()
   if (a === '') return { art: 'liste' }
-  if (a === 'klären' || a === 'klaeren') return { art: 'klaeren' }
+  const klaeren = /^(?:(alle)\s+)?kl(?:ä|ae)ren(?:\s+(alle))?$/.exec(a)
+  if (klaeren !== null) return { art: 'klaeren', alle: klaeren[1] !== undefined || klaeren[2] !== undefined }
   if (a === 'überblick' || a === 'ueberblick') return { art: 'ueberblick' }
   // Mehrere Antworten: "3 a c" oder "3 a,c" (bei Punkten mit Mehrfachauswahl)
   const mehrere = /^(\d+)\s+([a-d](?:[\s,]+[a-d])+)$/.exec(a)
@@ -954,7 +957,7 @@ export function kurzNummern(args: string): number[] | null {
 
 const BEFEHLSWORT = /^(erledigt|fertig|weg|verwerfen|später|spaeter|aktuell)(\s|$)/i
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> <Text> oder /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären · /offen überblick · /offen neu <Text> · /offen gedanke <Text> · /offen gedanken [prüfen] · /offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> <Text> oder /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären [alle] · /offen überblick · /offen neu <Text> · /offen gedanke <Text> · /offen gedanken [prüfen] · /offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
 
 /**
  * Die Bitte, die /offen klären an Claude schickt. Beginnt mit „Automatische Klärung“, damit der
@@ -1045,9 +1048,28 @@ export function statuszeile(punkte: readonly Punkt[], prueft: boolean, s?: Sicht
 /** Wer schaut und wann: entscheidet, welche Punkte gefragt werden. */
 export type Sicht = { sitzung: string; jetzt: number }
 
+/** Ohne bekannte Sitzung (vor 0.16.9 ohne Stempel angelegt, im Abgleich „unbekannt“): gehört jeder Sitzung. */
+export const herrenlos = (p: Punkt): boolean => p.sitzung === undefined || p.sitzung === '' || p.sitzung === 'unbekannt'
+
 /** Ein Punkt, den eine andere Sitzung im selben Projekt führt. */
 export const fremd = (p: Punkt, sitzung: string): boolean =>
-  p.sitzung !== undefined && sitzung !== '' && p.sitzung !== sitzung
+  !herrenlos(p) && sitzung !== '' && p.sitzung !== sitzung
+
+/**
+ * Wenn nichts zu fragen ist: nicht „nichts offen“, solange /offen noch Punkte zeigt - sagen, wem
+ * sie gehören (andere Sitzungen) oder dass sie ruhen. tipp hängt den passenden Befehl an.
+ */
+export function nichtsFragbar(punkte: readonly Punkt[], s: Sicht, tipp = ''): string {
+  const alle = offene(punkte)
+  const fremde = alle.filter(p => fremd(p, s.sitzung)).length
+  const ruhend = alle.filter(p => !fremd(p, s.sitzung) && ruht(p, s)).length
+  if (fremde + ruhend === 0) return 'Es ist nichts offen.'
+  const teile = [
+    fremde > 0 ? `${fremde} ${fremde === 1 ? 'Punkt gehört einer anderen Sitzung' : 'Punkte gehören anderen Sitzungen'}` : '',
+    ruhend > 0 ? `${ruhend} ${ruhend === 1 ? 'Punkt ist' : 'Punkte sind'} zurückgelegt` : '',
+  ].filter(t => t !== '')
+  return `In dieser Sitzung ist nichts offen – ${teile.join(', ')}. /offen zeigt sie${tipp}.`
+}
 
 /** Zurückgelegt und noch nicht wieder dran. */
 export const ruht = (p: Punkt, s: Sicht): boolean =>
@@ -1155,7 +1177,7 @@ export function doppelteLoesen(liste: readonly Punkt[]): Punkt[] {
 
 /** Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. */
 export const uebernehmen = (liste: readonly Punkt[], sitzung: string, nur?: string): Punkt[] =>
-  liste.map(p => (p.status === 'offen' && (nur === undefined || p.sitzung === nur) ? { ...p, sitzung } : p))
+  liste.map(p => (p.status === 'offen' && (nur === undefined || p.sitzung === nur || herrenlos(p)) ? { ...p, sitzung } : p))
 
 // ---------------------------------------------------------------- Warnungen von kontext-anzeige
 

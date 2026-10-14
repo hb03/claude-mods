@@ -145,9 +145,9 @@ describe('kommando: antwort, alle, klären', () => {
   })
 
   test('„klären“ und „klaeren“', () => {
-    expect(kommando('klären')).toEqual({ art: 'klaeren' })
-    expect(kommando('klaeren')).toEqual({ art: 'klaeren' })
-    expect(kommando(' Klären ')).toEqual({ art: 'klaeren' })
+    expect(kommando('klären')).toEqual({ art: 'klaeren', alle: false })
+    expect(kommando('klaeren')).toEqual({ art: 'klaeren', alle: false })
+    expect(kommando(' Klären ')).toEqual({ art: 'klaeren', alle: false })
   })
 })
 
