@@ -41,6 +41,18 @@ describe('gedanken.md', () => {
       .toBe('# Gedanken\n\nEinfälle, die noch nicht dran sind; wird von offene-punkte und claude-web geschrieben.\n\n### G1 · 14.10.2026 09:00 · offen\nHallo\n')
   })
 
+  test('claude-web-Dateien: Abschnitte „## …“ gehören zu keinem Gedanken; alte Vermerke zählen als verarbeitet', () => {
+    const d = gedankenLesen([
+      '# Gedanken', '', '## Offen', '', '### G1 · 13.10.2026 22:10 · offen', 'A', '', '## In Arbeit', '',
+      '### G2 · 13.10.2026 22:11 · als offener Punkt #4', 'B', '', '## Verarbeitet', '', '### G3 · 13.10.2026 22:12 · in den Chat gegeben', 'C', '',
+    ].join('\n'))
+    expect(d.kopf).toBe('# Gedanken\n')
+    expect(d.gedanken.map(g => g.text)).toEqual(['A', 'B', 'C'])
+    expect(d.gedanken.map(gedankeZustand)).toEqual(['offen', 'verarbeitet', 'verarbeitet'])
+    expect(gedankeZustand({ nr: 9, zeit: '', vermerk: 'als Punkt #12', text: '' })).toBe('verarbeitet')
+    expect(gedankenText(d)).not.toContain('## Offen')
+  })
+
   test('Marken von Claude: erledigt mit Commit, verworfen mit Grund; G ohne Buchstabe geht auch', () => {
     const jetzt = new Date(2026, 9, 14, 9, 5).getTime()
     expect(zeitText(jetzt)).toBe('14.10.2026 09:05')

@@ -12,7 +12,7 @@ import {
   listeFuerClaude, veraltetSchliessen, zuletztGeschlossen, zuletztFertig,
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
   ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
-  EINGANG_TAKT_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
+  EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
   HINWEIS_BLOCK, aenderungenZuIds, blockLesen,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
 } from './logik'
@@ -110,9 +110,10 @@ let budgetGrenze = BUDGET_GRENZE
 // Ueberblick: laeuft gerade einer, und wie viele fertige Menschen-Turns seit dem letzten.
 let ueberblickLaeuft = false
 let fertigeTurns = 0
-// Eingang (eingang.txt): der naechste Blick hinein.
+// Eingang (eingang.txt): der naechste Blick hinein - alle 15 s, solange ein Mensch arbeitet, sonst seltener.
 let eingangTakt: Timer | null = null
 let eingangLaeuft = false
+let letzterMensch = 0
 
 async function sicht($: EngineInterface): Promise<Sicht> {
   return { sitzung, jetzt: await $.clock.now() }
@@ -410,12 +411,14 @@ async function eingangLesen($: EngineInterface) {
   }
 }
 
-function eingangPlanen($: EngineInterface) {
+function eingangPlanen($: EngineInterface, takt = EINGANG_RUHE_MS) {
   eingangTakt?.cancel()
-  eingangTakt = $.clock.after(EINGANG_TAKT_MS, () => {
+  eingangTakt = $.clock.after(takt, () => {
     void eingangLesen($)
       .catch(fehler => $.ui.log(`offene-punkte: Eingang (${String(fehler)})`))
-      .finally(() => eingangPlanen($))
+      .then(() => $.clock.now())
+      .then(jetzt => eingangPlanen($, turnLaeuft || jetzt - letzterMensch < EINGANG_WACH_MS ? EINGANG_TAKT_MS : EINGANG_RUHE_MS))
+      .catch(() => eingangPlanen($))
   })
 }
 
@@ -1136,6 +1139,7 @@ export const register: Register = (on, options) => {
   fertigeTurns = 0
   eingangTakt = null
   eingangLaeuft = false
+  letzterMensch = 0
 
   on('session.start', async ($, e, next) => {
     // Ohne Menschen davor (claude -p, SDK) bleibt der Mod still: kein Werkzeug, kein Hinweis, kein Haiku -
@@ -1239,6 +1243,7 @@ export const register: Register = (on, options) => {
     }
     // claude-webs Klaerung kommt per tmux wie getippt an: wie eine Maschine behandeln.
     eingabeArt = istMaschinenEingabe(e.text) ? 'maschine' : 'mensch'
+    if (eingabeArt === 'mensch') letzterMensch = await $.clock.now()
     // Selbst abgeschickt (z. B. Enter auf die vorgelegten Antworten): kein Countdown mehr.
     vorschlag = ''
     ticker?.cancel()

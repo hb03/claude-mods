@@ -9,7 +9,7 @@ export const VERALTET_NACH = 10
 /** Ein Angebot, auf das so viele Antworten lang niemand eingeht, gilt als stilles Nein. */
 export const ANGEBOT_VERFALL = 4
 /** Muss zu .claude-plugin/plugin.json passen; steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt. */
-export const VERSION = '0.16.0'
+export const VERSION = '0.16.1'
 /** So oft prüft eine laufende Sitzung, ob ein Abgleich fällig ist - Server-Sitzungen laufen tagelang ohne Neustart. */
 export const ABGLEICH_TAKT_MS = 60 * 60_000
 /** Ab so viel Prozent des 5-Stunden-Fensters ruft der Mod kein Haiku mehr (Option haikuBisProzent). */
@@ -1278,8 +1278,11 @@ export function verlaufsText(nachrichten: readonly Nachricht[], max = MAX_VERLAU
 
 // ---------------------------------------------------------------- Eingang (claude-web, Skripte)
 
-/** So oft sieht eine Sitzung nach, ob in eingang.txt etwas liegt. */
+/** So oft sieht eine Sitzung nach, ob in eingang.txt etwas liegt - solange jemand daran arbeitet … */
 export const EINGANG_TAKT_MS = 15_000
+/** … und so oft, wenn seit EINGANG_WACH_MS keine Eingabe eines Menschen kam (Server-Sitzungen ruhen stundenlang). */
+export const EINGANG_RUHE_MS = 90_000
+export const EINGANG_WACH_MS = 10 * 60_000
 
 /**
  * eingang.txt: je Zeile ein /offen-Befehl ohne das „/offen“ („12 antwort Ja, bitte“, „12 a“,
@@ -1314,7 +1317,8 @@ export const zeitText = (ms: number): string => {
 export const gedankeZustand = (g: Gedanke): GedankenZustand => {
   const v = g.vermerk.trim().toLowerCase()
   if (v === '' || v === 'offen') return 'offen'
-  if (/^(erledigt|verworfen|umgesetzt)\b/.test(v)) return 'verarbeitet'
+  // Auch claude-webs Vermerke: „als offener Punkt …“ und „in den Chat …“ gelten dort als verarbeitet.
+  if (/^(erledigt|verworfen|umgesetzt|als (offener )?punkt|in den chat)\b/.test(v)) return 'verarbeitet'
   return 'in Arbeit'
 }
 
@@ -1336,6 +1340,8 @@ export function gedankenLesen(text: string): GedankenDatei {
       aktuell = { nr: Number(m[1]), zeit: (m[2] ?? '').trim(), vermerk: (m[3] ?? '').trim() || 'offen', text: '' }
       continue
     }
+    // Abschnitte wie „## Offen / ## In Arbeit“ (ältere claude-web-Dateien) gehören zu keinem Gedanken.
+    if (/^##\s/.test(z)) continue
     if (aktuell === null) kopf.push(z)
     else rumpf.push(z)
   }
