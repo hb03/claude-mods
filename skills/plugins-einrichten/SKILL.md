@@ -79,6 +79,22 @@ Für frisch installierte Plugins `claude plugin configure <name>@eigene-plugins`
 aufrufen. Zeigt es Optionen ohne Wert, die nötig sind, den Nutzer danach fragen.
 Die Voreinstellungen der Plugins sind sonst in Ordnung – nichts erfinden.
 
+**push-wache, Option `mails`:** Ohne Einstellung erlaubt sie nur
+`@users.noreply.github.com` und fragt dann bei jedem Push von Claude nach, der
+mit einer anderen Mail committet. Ist `pluginConfigs["push-wache@eigene-plugins"].options.mails`
+in `~/.claude/settings.json` leer oder nicht gesetzt:
+- Die Commit-Mails dieses Rechners ermitteln: `git config --global user.email`
+  und `GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_EMAIL` unter `env` in `settings.json`.
+- Dem Nutzer vorschlagen, sie zu erlauben, und erst nach Zustimmung eintragen:
+  `@users\.noreply\.github\.com$|^claude@hb03\.de$|^<mail mit \. statt .>$`.
+  `claude@hb03.de` ist die Mail, mit der Claude bei Marc committet.
+- Danach `claude plugin configure push-wache@eigene-plugins` aufrufen; dort muss `mails` als gesetzt erscheinen.
+
+Ist `mails` schon gesetzt, nichts ändern.
+
+Unter Windows erledigt `einrichten.ps1` aus dem Clone dasselbe ohne Rückfrage, auch
+Schritt 1, 2, 4 und 5 (`irm https://raw.githubusercontent.com/hb03/claude-mods/main/einrichten.ps1 | iex`).
+
 ## 4. Hook für neue Plugins
 
 In `~/.claude/settings.json` unter `hooks.SessionStart` genau **einen** Eintrag,
