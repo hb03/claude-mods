@@ -1,0 +1,5 @@
+{
+  "name": "haiku-helfer",
+  "version": "0.1.0",
+  "description": "Drei Subagenten auf Haiku für Fleißarbeit: log-sucher (Logs sichten und zusammenfassen), datei-finder (Dateien und Stellen finden), status-abfrage (Zustand von Geräten und Diensten nur lesend abfragen). Ihre Beschreibung sagt „use proactively“, so gibt Claude solche Aufgaben von selbst an das günstige Modell ab."
+}

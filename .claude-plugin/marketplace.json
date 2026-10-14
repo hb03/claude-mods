@@ -34,6 +34,13 @@
       "description": "Mod: nach einem grünen Testlauf mit uncommitteten Änderungen bekommt Claude still den Hinweis, den Arbeitsschritt zu committen.",
       "version": "0.1.0",
       "category": "mod"
+    },
+    {
+      "name": "haiku-helfer",
+      "source": "./plugins/haiku-helfer",
+      "description": "Agenten: log-sucher, datei-finder und status-abfrage laufen auf Haiku und übernehmen Logs sichten, Suchen und Zustandsabfragen, damit das Hauptmodell dafür keine Tokens verbraucht.",
+      "version": "0.1.0",
+      "category": "agents"
     }
   ]
 }
