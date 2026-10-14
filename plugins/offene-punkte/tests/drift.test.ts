@@ -62,7 +62,8 @@ describe('Versionsdrift (G3)', () => {
       throw new Error('ENOENT')
     })
     on('fs.read', (_, e) => {
-      const t = dateien.get(pfad(e.path))
+      // Die eigene plugin.json, wo auch immer der Test-Host das Plugin hinlegt
+      const t = dateien.get(pfad(e.path)) ?? (pfad(e.path).endsWith('/.claude-plugin/plugin.json') ? dateien.get('PLUGIN_JSON') : undefined)
       if (t === undefined) throw new Error('ENOENT')
       return { value: t } as never
     })
@@ -88,6 +89,25 @@ describe('Versionsdrift (G3)', () => {
     await $.command.run({ command: 'offen', args: 'neu Probe' } as never)
     await uhr.settle()
     expect(JSON.parse(dateien.get('/projekt/offene-punkte/offen.json') ?? '{}')).toMatchObject({ installiert: '9.9.9' })
+  })
+
+  test('die laufende Fassung kommt aus der eigenen plugin.json, nicht aus der Konstante', async ($, on) => {
+    const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+    const dateien = new Map<string, string>([
+      ['/home/x/.claude/plugins/installed_plugins.json', INSTALLIERT],
+      ['PLUGIN_JSON', '{ "name": "offene-punkte", "version": "9.9.9" }'],
+    ])
+    const toasts: string[] = []
+    grundlage(on, dateien, toasts)
+    await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+    await uhr.settle()
+    // installiert 9.9.9 = laufend 9.9.9: kein Hinweis
+    expect(toasts.some(t => t.includes('installiert'))).toBe(false)
+    await $.command.run({ command: 'offen', args: 'neu Probe' } as never)
+    await uhr.settle()
+    const d = JSON.parse(dateien.get('/projekt/offene-punkte/offen.json') ?? '{}') as { version?: string; installiert?: string }
+    expect(d.version).toBe('9.9.9')
+    expect(d.installiert).toBeUndefined()
   })
 
   test('ohne Abweichung kein Toast', async ($, on) => {

@@ -37,6 +37,8 @@ describe('Block in der Antwort', () => {
     expect(r.aenderungen).toEqual([{
       nr: 12,
       titel: 'Upload-Grenze',
+      // seit 0.16.6: die Art im Kopf geht mit (ohne Angabe bleibt sie, wie sie ist)
+      art: 'entscheidung',
       frage: 'Welche Grenze: 55 MB oder aufteilen?',
       optionen: [{ label: '55 MB (empfohlen)', antwort: '55 MB (empfohlen)' }, { label: 'Absätze aufteilen', antwort: 'Absätze aufteilen' }],
     }])
@@ -58,7 +60,8 @@ describe('Block in der Antwort', () => {
   test('der Hinweis erklärt den Block und die Marken', () => {
     expect(HINWEIS_BLOCK).toContain('```offen')
     expect(HINWEIS_BLOCK).toContain('erledigt: #<Nr>')
-    expect(HINWEIS_BLOCK.length).toBeLessThan(1_600)
+    // geht in jede Sitzung: knapp halten (0.16.6: +„bei dir“-Satz)
+    expect(HINWEIS_BLOCK.length).toBeLessThan(1_800)
   })
 
   test('Antwort mit Label: die Frage steht dabei, antwortIn findet den Text trotzdem', () => {
@@ -119,7 +122,7 @@ test('ein Block in der Antwort legt den Punkt an - ohne Haiku; die Wahl schickt 
   expect(knopfA).toBeDefined()
   await ui.press({ key: String((knopfA as { key?: string }).key) })
   await uhr.advance(5_000)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Geräte-Token eintragen“ (Hast du das Token im Abholer eingetragen?): eingetragen, Test starten'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Geräte-Token eintragen“ (Hast du das Token im Abholer eingetragen?): eingetragen, Test starten'])
   await ui.unmount()
 })
 

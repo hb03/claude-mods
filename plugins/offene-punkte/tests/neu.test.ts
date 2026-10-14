@@ -232,7 +232,7 @@ test('eigene Antwort: Textfeld unter der Auswahl, Enter schickt ab und schließt
   expect(feld).toBeDefined()
   await $.ui.input({ plugin: 'offene-punkte', key: String((feld as { key?: string }).key), text: 'Erst morgen früh.' } as never)
   await uhr.advance(5_000)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Ausrollen“: Erst morgen früh.'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Ausrollen“: Erst morgen früh.'])
   await ui.unmount()
   const danach = await $.ui.mount(band('terminal') as never)
   expect(await danach.find({ type: 'Text', text: /Ausrollen/ })).toBeUndefined()
@@ -255,7 +255,7 @@ test('auf dem Handy legt "Eigene Antwort" den Anfang in die Eingabe; abgeschickt
   const ui = await $.ui.mount(band('mobile') as never)
   const knopf = await ui.find({ type: 'Button', text: 'Eigene Antwort …' })
   await ui.press({ key: String((knopf as { key?: string }).key) })
-  expect(gefuellt).toEqual(['Zum offenen Punkt „Ausrollen“: '])
+  expect(gefuellt).toEqual(['Zum offenen Punkt #1 „Ausrollen“: '])
   await ui.unmount()
 
   await $.prompt.submit({ text: 'Zum offenen Punkt „Ausrollen“: Nein, erst nach dem Update.', origin: { kind: 'composer' } } as never)
@@ -333,7 +333,7 @@ test('zwei Fragen einer Runde: die erste Antwort wartet, beide gehen als eine Na
   await uhr.advance(4_000)
   expect(gesendet).toEqual([])
   await uhr.advance(1_000)
-  expect(gesendet).toEqual(['Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'])
+  expect(gesendet).toEqual(['Zu den offenen Punkten:\n- #1 „Variante“: Nimm B.\n- #2 „Ausrollen“: Ja, gleich.'])
 })
 
 test('ohne weitere Wahl geht das Gesammelte nach 30 Sekunden los; "Schon erledigt" zählt als beantwortet', async ($, on) => {
@@ -342,7 +342,7 @@ test('ohne weitere Wahl geht das Gesammelte nach 30 Sekunden los; "Schon erledig
   await uhr.advance(29_000)
   expect(gesendet).toEqual([])
   await uhr.advance(1_000)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Variante“: Nimm A.'])
 })
 
 test('eine Antwort ohne Text schließt die Runde; das Gesammelte geht nach 5 s', async ($, on) => {
@@ -350,14 +350,14 @@ test('eine Antwort ohne Text schließt die Runde; das Gesammelte geht nach 5 s',
   await $.command.run({ command: 'offen', args: '1 a' } as never)
   await $.command.run({ command: 'offen', args: '2 b' } as never)
   await uhr.advance(5_000)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Variante“: Nimm A.'])
 })
 
 test('schreibt der Nutzer selbst, steht das Gesammelte vor seiner Nachricht', async ($, on) => {
   const { gesendet } = await zweiFragen($, on)
   await $.command.run({ command: 'offen', args: '1 a' } as never)
   await $.prompt.submit({ text: 'Und mach danach die Tests.', origin: { kind: 'composer' } } as never)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Variante“: Nimm A.\n\nUnd mach danach die Tests.'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Variante“: Nimm A.\n\nUnd mach danach die Tests.'])
 })
 
 // ---------------------------------------------------------------- 0.5.1: Antworten erst bei Claude schließen
@@ -436,7 +436,7 @@ test('Fragen aus zwei Auswertungen gehen zusammen; Haiku erfährt danach, was be
   expect(gesendet).toEqual([])
   await $.command.run({ command: 'offen', args: '2 a' } as never)
   await uhr.advance(5_000)
-  const nachricht = 'Zu den offenen Punkten:\n- „Erste“: Ja, die erste.\n- „Zweite“: Ja, die zweite.'
+  const nachricht = 'Zu den offenen Punkten:\n- #1 „Erste“: Ja, die erste.\n- #2 „Zweite“: Ja, die zweite.'
   expect(gesendet).toEqual([nachricht])
 
   await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't3' } as never)
@@ -479,7 +479,7 @@ test('Ergänzen: Gesammeltes und spätere Antworten kommen in die Eingabe; Herau
   await uhr.advance(60_000)
   expect(gesendet).toEqual([])
   // Angefangener Text bleibt stehen, die Antworten kommen darunter.
-  expect(box.text).toBe('Übrigens: \nZu den offenen Punkten:\n- „Variante“: Nimm A.\n- „Grund“: Weil: \nZum offenen Punkt „Ausrollen“: Ja, gleich. ')
+  expect(box.text).toBe('Übrigens: \nZu den offenen Punkten:\n- #1 „Variante“: Nimm A.\n- #2 „Grund“: Weil: \nZum offenen Punkt #3 „Ausrollen“: Ja, gleich. ')
 
   // Der Nutzer ergänzt den Grund und nimmt das Ausrollen wieder heraus.
   await $.prompt.submit({ text: 'Zu den offenen Punkten:\n- „Variante“: Nimm A.\n- „Grund“: Weil: billiger.', origin: { kind: 'composer' } } as never)
@@ -570,7 +570,7 @@ async function vorgelegt($: Parameters<TestBody>[0], on: On) {
   return { uhr, box, gesendet, r: String((r as { text?: string }).text) }
 }
 
-const NACHRICHT = 'Zu den offenen Punkten:\n- „Variante“: Nimm B.\n- „Ausrollen“: Ja, gleich.'
+const NACHRICHT = 'Zu den offenen Punkten:\n- #1 „Variante“: Nimm B.\n- #2 „Ausrollen“: Ja, gleich.'
 
 test('alle beantwortet: die Antworten stehen in der Eingabe, das Band zählt 5 s herunter, dann gehen sie ab', async ($, on) => {
   const { uhr, box, gesendet, r } = await vorgelegt($, on)

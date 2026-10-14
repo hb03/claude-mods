@@ -71,7 +71,7 @@ test('nach einer Antwort steht die offene Frage über der Eingabe, die Wahl geht
   expect(knopfA).toBeDefined()
   await ui.press({ key: String((knopfA as { key?: string }).key) })
   await uhr.advance(5_000)
-  expect(gesendet).toEqual(['Zum offenen Punkt „Freigabe zum Ausrollen“: Ja, rolle Stufe 1 aus.'])
+  expect(gesendet).toEqual(['Zum offenen Punkt #1 „Freigabe zum Ausrollen“: Ja, rolle Stufe 1 aus.'])
   await ui.unmount()
 
   // Beantwortet: die Zeile ist wieder leer.

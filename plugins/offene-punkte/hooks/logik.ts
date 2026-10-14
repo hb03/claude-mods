@@ -8,8 +8,26 @@ export const MAX_ANTWORT = 12_000
 export const VERALTET_NACH = 10
 /** Ein Angebot, auf das so viele Antworten lang niemand eingeht, gilt als stilles Nein. */
 export const ANGEBOT_VERFALL = 4
-/** Muss zu .claude-plugin/plugin.json passen; steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt. */
-export const VERSION = '0.16.2'
+/**
+ * Rückfall, wenn die eigene plugin.json nicht lesbar ist; sonst gilt, was beim Start aus ihr gelesen
+ * wurde (laufendeVersionSetzen). Steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt.
+ */
+export const VERSION = '0.16.6'
+let laufend = VERSION
+/** Die Fassung, die gerade läuft: aus der plugin.json im geladenen Ordner, sonst VERSION. */
+export const laufendeVersion = (): string => laufend
+export function laufendeVersionSetzen(version: string): void {
+  laufend = /^\d+\.\d+\.\d+/.test(version) ? version : VERSION
+}
+/** Die Fassung aus dem Text einer plugin.json; leer, wenn nicht lesbar. */
+export function manifestVersion(text: string): string {
+  try {
+    const v = (JSON.parse(text) as { version?: unknown }).version
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return ''
+  }
+}
 /** So oft prüft eine laufende Sitzung, ob ein Abgleich fällig ist - Server-Sitzungen laufen tagelang ohne Neustart. */
 export const ABGLEICH_TAKT_MS = 60 * 60_000
 /** Ab so viel Prozent des 5-Stunden-Fensters ruft der Mod kein Haiku mehr (Option haikuBisProzent). */
@@ -29,7 +47,7 @@ export const kostenZeile = (
   JSON.stringify({
     zeit: new Date(jetzt).toISOString(), sitzung, art,
     eingabe: usage.input_tokens + usage.cache_creation_input_tokens, cache: usage.cache_read_input_tokens, ausgabe: usage.output_tokens,
-    version: VERSION,
+    version: laufend,
   })
 
 /** Fester Teil des Auftrags - steht vorn, damit der Prompt-Cache ihn hält. */
@@ -47,7 +65,7 @@ In "abwaegung" stehen die Argumente aus der Antwort, die für die Entscheidung z
 
 Für jeden neuen Punkt: eine kurze Frage an den Nutzer und 1 bis 4 Antwortmöglichkeiten (bei einem Angebot reicht oft eine: das konkrete Ja; ablehnen kann der Nutzer immer mit "Nicht relevant"). Jede Möglichkeit hat ein kurzes "label" (höchstens 6 Wörter) und eine "antwort": der Satz, den der Nutzer dem Assistenten damit schickt (Ich-Form, konkret, z. B. "Ja, rolle es aus."). Braucht eine Antwort noch eine Eingabe des Nutzers (eigener Text, eine Zahl, eine Fehlermeldung), ende die "antwort" mit einem Doppelpunkt - sie wird dann nur vorbereitet, nicht abgeschickt.
 
-WER HANDELT, MUSS KLAR SEIN: In "antwort" spricht immer der Nutzer ("ich" = der Nutzer, "du" = der Assistent). Sie wird genau so abgeschickt, als hätte der Nutzer sie selbst getippt: nie aus Sicht des Assistenten ("Ich übernehme das" hieße dann, der Nutzer übernimmt) und nie über den Assistenten in der dritten Person ("Claude soll …", "Der Assistent prüft …"). Soll der Assistent handeln: "Prüf das bitte.", "Ja, rolle es aus." Handelt der Nutzer selbst: "Ich prüfe das selbst, Ergebnis:". Das "label" steht ohne "ich" und ohne "du", ohne Personalpronomen: entweder als Anweisung an den Assistenten ("Übernimm: prüfen", "Rolle aus") oder mit ausdrücklichem Handelnden ("Mache ich selbst" ist verboten, stattdessen "Nutzer prüft selbst"). Nie ein Label wie "Ich erledige das", bei dem offen bleibt, wer gemeint ist.
+WER HANDELT, MUSS KLAR SEIN: In "antwort" spricht immer der Nutzer ("ich" = der Nutzer, "du" = der Assistent). Sie wird genau so abgeschickt, als hätte der Nutzer sie selbst getippt: nie aus Sicht des Assistenten ("Ich übernehme das" hieße dann, der Nutzer übernimmt) und nie über den Assistenten in der dritten Person ("Claude soll …", "Der Assistent prüft …"). Soll der Assistent handeln: "Prüf das bitte.", "Ja, rolle es aus." Handelt der Nutzer selbst: "Ich prüfe das selbst, Ergebnis:". LABEL UND ANTWORT SAGEN DASSELBE: Ein Klick ist eine Wahl, kein Beweis. Nennt das Label eine Handlung des Nutzers ("Doppelung im Leitstand bereinigen"), ist die antwort eine Absicht ("Ich bereinige das im Leitstand.") - nie eine schon erledigte Handlung ("Ich habe … bereinigt."). Erledigt meldet die antwort nur, wenn das Label es ausdrücklich sagt ("Erledigt: im Leitstand bereinigt"). Was der Nutzer außerhalb tun muss (an einem Gerät, im Browser, in einer Oberfläche), ist art "aufgabe". Das "label" steht ohne "ich" und ohne "du", ohne Personalpronomen: entweder als Anweisung an den Assistenten ("Übernimm: prüfen", "Rolle aus") oder mit ausdrücklichem Handelnden ("Mache ich selbst" ist verboten, stattdessen "Nutzer prüft selbst"). Nie ein Label wie "Ich erledige das", bei dem offen bleibt, wer gemeint ist.
 
 ADRESSEN: Nennt die Antwort die Webseite des Projekts (z. B. https://beispiel.de), schreib Seiten darauf in "frage", "info" und "anleitung" mit voller Adresse ("https://beispiel.de/admin/vorschlaege" statt "/admin/vorschlaege") - sie werden dann zum Link.
 
@@ -88,7 +106,7 @@ export const NACHFASSEN_AUFTRAG = `Du liest die letzte Antwort eines Coding-Assi
 
 KEIN Punkt für: die einzelne Rückfrage am Ende, die der Nutzer sowieso gleich beantwortet; Angebote ("soll ich noch …?", "könnte ich auch …"); "neu starten?"; Prüfungen, die der Assistent selbst machen kann (Logs, Tests, Dateien, Dienste); Erklärungen; Fragen, die der Assistent als Auswahl-Dialog stellt; alles, was eine ANDERE Claude-Sitzung betrifft. Im Zweifel nichts eintragen: {"neu":[],"erledigt":[],"erwaehnt":[]}.
 
-Jeder Punkt: "titel" (2-5 Wörter), "art" ("aufgabe": der Nutzer tut selbst etwas; "entscheidung": er wählt oder gibt frei), "stufe" ("blockiert": ohne ihn geht es nicht weiter; sonst "normal"), "frage" (ein Satz an den Nutzer), "info" (warum offen, ein Satz), "abwaegung" (Gründe aus der Antwort, höchstens ein Satz, sonst leer), "anleitung" (nur bei Aufgaben: nummerierte Schritte mit allen Befehlen, Pfaden und Werten WÖRTLICH aus der Antwort, Befehle in \`\`\`bash-Blöcken; sonst leer), "optionen": 1 bis 2, die Empfehlung zuerst, jede mit "label" (höchstens 6 Wörter, spezifisch, ohne ich/du) und "antwort" (der Satz, den der Nutzer dem Assistenten damit schickt, Ich-Form aus Sicht des Nutzers; endet sie mit ":", muss der Nutzer noch etwas ergänzen). Keine Optionen für Später, Schon erledigt, Nicht relevant, eigene Antwort - die gibt es immer. Nennt die Antwort die Webseite des Projekts, schreib Seiten mit voller Adresse.
+Jeder Punkt: "titel" (2-5 Wörter), "art" ("aufgabe": der Nutzer tut selbst etwas; "entscheidung": er wählt oder gibt frei), "stufe" ("blockiert": ohne ihn geht es nicht weiter; sonst "normal"), "frage" (ein Satz an den Nutzer), "info" (warum offen, ein Satz), "abwaegung" (Gründe aus der Antwort, höchstens ein Satz, sonst leer), "anleitung" (nur bei Aufgaben: nummerierte Schritte mit allen Befehlen, Pfaden und Werten WÖRTLICH aus der Antwort, Befehle in \`\`\`bash-Blöcken; sonst leer), "optionen": 1 bis 2, die Empfehlung zuerst, jede mit "label" (höchstens 6 Wörter, spezifisch, ohne ich/du) und "antwort" (der Satz, den der Nutzer dem Assistenten damit schickt, Ich-Form aus Sicht des Nutzers; endet sie mit ":", muss der Nutzer noch etwas ergänzen; sie sagt dasselbe wie das Label: nennt das Label eine Handlung des Nutzers, ist die antwort eine Absicht ("Ich kläre das im Leitstand."), nie "Ich habe … erledigt", außer das Label sagt "Erledigt: …"). Was der Nutzer außerhalb selbst tun muss, ist "aufgabe". Keine Optionen für Später, Schon erledigt, Nicht relevant, eigene Antwort - die gibt es immer. Nennt die Antwort die Webseite des Projekts, schreib Seiten mit voller Adresse.
 
 Bekannte offene Punkte stehen unten mit ID: NICHT neu melden. Erledigt die neue Antwort oder die letzte Nachricht des Nutzers einen davon, oder ist er überholt, melde ihn unter "erledigt" als {"id":"...","grund":"wenige Wörter"}; geht die Antwort darauf ein, die ID unter "erwaehnt". Kürzlich geschlossene Punkte (unten) nicht neu anlegen.
 
@@ -125,7 +143,7 @@ function antwortTeil(antworten: string | readonly string[]): string {
 }
 
 /** Felder, die Haiku oder Claude an einem bekannten Punkt nachschärfen darf. */
-export type Aenderung = { id: string } & Partial<Pick<Punkt, 'titel' | 'frage' | 'info' | 'anleitung' | 'abwaegung' | 'optionen' | 'stufe'>>
+export type Aenderung = { id: string } & Partial<Pick<Punkt, 'titel' | 'frage' | 'info' | 'anleitung' | 'abwaegung' | 'optionen' | 'stufe' | 'art'>>
 
 export type Auswertung = {
   neu: { titel: string; art: Art; stufe: Stufe; frage: string; info: string; abwaegung: string; anleitung: string; optionen: Option[] }[]
@@ -202,6 +220,8 @@ export function lies(roh: string): Auswertung | null {
     if (optionen.length > 0) aenderung.optionen = optionen
     const s = stufe(a.stufe)
     if (s !== undefined) aenderung.stufe = s
+    // Aus der Entscheidung wird eine Aufgabe (oder umgekehrt), wenn sich zeigt, dass der Nutzer selbst handeln muss.
+    if (a.art === 'aufgabe' || a.art === 'entscheidung') aenderung.art = a.art
     aktualisiert.push(aenderung)
   }
 
@@ -243,10 +263,10 @@ b) Alternative - endet das Label mit ":", ergänzt der Nutzer noch Text
 info: warum offen, ein Satz (kann entfallen)
 anleitung: nur bei Aufgaben - Schritte mit allen Befehlen, Pfaden und Werten wörtlich, Befehle als eigene Zeilen mit "$ " davor
 \`\`\`
-Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
+Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Seine Antwort („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit „# #<Nr> Titel“ wieder. Handlungen des Nutzers als Absicht („Ich kläre das“), nie als Ergebnis. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
 
 /** Hinweis bei Auswertung „claude“: Claude legt Punkte selbst an, statt dass Haiku jede Antwort liest. */
-export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
+export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Eine Antwort des Nutzers („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit dem Werkzeug (Feld "aktualisieren" mit nr) wieder. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
 /**
  * Die offenen Punkte als Kontext für Claude: kurz, mit Nummer, damit er Erledigtes und
@@ -319,6 +339,13 @@ export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (nu
     })
   }
   return liste.map(p => {
+    // Beantwortet und bei Claude: die Marke sagt, dass er es umgesetzt hat.
+    if (p.status === 'erledigt' && p.beiClaude !== undefined) {
+      const m = passt(p)
+      if (m === undefined) return p
+      const { beiClaude: _b, ...rest } = p
+      return { ...rest, ergebnis: `${p.ergebnis ?? 'beantwortet'} · von Claude als ${m.ueberholt ? 'überholt' : 'umgesetzt'} gemeldet${m.grund !== '' ? ` – ${m.grund}` : ''}`, geaendert: jetzt }
+    }
     if (p.status !== 'offen' || p.ausstehend !== undefined) return p
     const m = passt(p)
     if (m === undefined) return p
@@ -362,6 +389,12 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
   const bezug = new Set([...a.erwaehnt, ...aenderungen.keys()])
 
   const liste = punkte.map(p => {
+    // Claude ändert einen erledigten (auch gerade beantworteten) Punkt: er ist wieder offen.
+    if (p.status === 'erledigt' && p.vonNutzer !== true && aenderungen.has(p.id)) {
+      const { id: _id, ...felder } = aenderungen.get(p.id)!
+      const { ergebnis: _e, auto: _a, beiClaude: _b, ruht: _r, ...rest } = p
+      return { ...rest, ...felder, status: 'offen' as const, ohneBezug: 0, zurueckgestellt: 0, geaendert: jetzt }
+    }
     // Schon beantwortet (nur noch nicht bei Claude): gilt als geschlossen.
     // Vom Nutzer selbst angelegt: bleibt, wie er ist, bis er ihn beantwortet.
     if (p.status !== 'offen' || p.ausstehend !== undefined || p.vonNutzer === true) return p
@@ -411,12 +444,32 @@ export function ausstehende(punkte: readonly Punkt[], wo?: 'sammlung' | 'eingabe
     .sort((a, b) => (a.ausstehend?.reihe ?? 0) - (b.ausstehend?.reihe ?? 0))
 }
 
-/** Die Antworten sind bei Claude: die Punkte schließen sich (ergebnisse: abweichendes Ergebnis je id). */
-export function abschliessen(liste: readonly Punkt[], ids: ReadonlySet<string>, ergebnisse: ReadonlyMap<string, string> = new Map()): Punkt[] {
+/**
+ * Die Antworten sind bei Claude: die Punkte schließen sich (ergebnisse: abweichendes Ergebnis je id).
+ * Mit gesendet (wann die Nachricht abging) liegt eine Antwort danach „bei Claude“, bis er sie
+ * umgesetzt meldet, den Punkt wieder öffnet oder der Turn darauf endet (beiClaudeFertig).
+ */
+export function abschliessen(liste: readonly Punkt[], ids: ReadonlySet<string>, ergebnisse: ReadonlyMap<string, string> = new Map(), gesendet?: number): Punkt[] {
   return liste.map(p => {
     if (!ids.has(p.id) || p.ausstehend === undefined) return p
     const { ausstehend: a, ...rest } = p
-    return { ...rest, status: a.status, ergebnis: ergebnisse.get(p.id) ?? a.ergebnis }
+    return { ...rest, status: a.status, ergebnis: ergebnisse.get(p.id) ?? a.ergebnis,
+             ...(gesendet !== undefined && a.status === 'erledigt' ? { beiClaude: gesendet } : {}) }
+  })
+}
+
+/**
+ * Ein Turn ist fertig: trug er die Antwort (turnText) oder begann er erst nach dem Senden
+ * (turnStart), bleibt der Punkt ohne Marke und ohne Änderung von Claude beantwortet - nur
+ * „bei Claude“ fällt weg. Ein Turn, der schon lief, als die Antwort abging, zählt nicht.
+ */
+export function beiClaudeFertig(liste: readonly Punkt[], turnStart: number, turnText = ''): Punkt[] {
+  const fertig = (p: Punkt) => p.beiClaude !== undefined && (p.beiClaude < turnStart || (turnText !== '' && antwortIn(turnText, p.titel) !== null))
+  if (!liste.some(fertig)) return liste as Punkt[]
+  return liste.map(p => {
+    if (!fertig(p)) return p
+    const { beiClaude: _b, ...rest } = p
+    return rest
   })
 }
 
@@ -440,7 +493,7 @@ export function antwortIn(nachricht: string, titel: string): string | null {
   const marke = /^„[^“]*“(?:[ \t]*\([^)\n]*\))?:/.exec(nachricht.slice(anfang))
   if (marke === null) return null
   const rest = nachricht.slice(anfang + marke[0].length)
-  const ende = rest.search(/\n(- „|Zum offenen Punkt „)/)
+  const ende = rest.search(/\n(- (?:#\d+ )?„|Zum offenen Punkt (?:#\d+ )?„)/)
   return (ende < 0 ? rest : rest.slice(0, ende)).trim()
 }
 
@@ -609,13 +662,32 @@ export function werkzeugLesen(eingabe: unknown): { neu: Auswertung['neu']; aende
   return { neu: gelesen?.neu ?? [], aenderungen, marken }
 }
 
-/** Änderungen per Nummer auf die IDs der offenen Punkte abbilden; unbekannte Nummern fallen weg. */
+/**
+ * Änderungen per Nummer auf die IDs abbilden: offene Punkte zuerst, sonst erledigte (auch gerade
+ * beantwortete) - die öffnet die Änderung wieder. Verworfene und unbekannte Nummern fallen weg
+ * (abgelehnteAenderungen nennt sie).
+ */
 export function aenderungenZuIds(liste: readonly Punkt[], aenderungen: readonly NrAenderung[]): Aenderung[] {
-  const ids = new Map(liste.filter(p => p.status === 'offen' && p.nr !== undefined).map(p => [p.nr, p.id]))
+  const ids = nrZuId(liste)
   return aenderungen.flatMap(({ nr, ...felder }) => {
     const id = ids.get(nr)
     return id === undefined ? [] : [{ id, ...felder }]
   })
+}
+
+/** Die Änderungen, die keinen Punkt treffen: Nummer unbekannt oder vom Nutzer verworfen. */
+export function abgelehnteAenderungen(liste: readonly Punkt[], aenderungen: readonly NrAenderung[]): NrAenderung[] {
+  const ids = nrZuId(liste)
+  return aenderungen.filter(a => !ids.has(a.nr))
+}
+
+function nrZuId(liste: readonly Punkt[]): Map<number, string> {
+  const ids = new Map<number, string>()
+  for (const p of liste) if (p.status === 'offen' && p.nr !== undefined) ids.set(p.nr, p.id)
+  const zu = liste.filter(p => p.status === 'erledigt' && p.nr !== undefined && p.ausstehend === undefined)
+    .sort((a, b) => (b.geaendert ?? b.erstellt) - (a.geaendert ?? a.erstellt))
+  for (const p of zu) if (!ids.has(p.nr!)) ids.set(p.nr!, p.id)
+  return ids
 }
 
 /**
@@ -726,9 +798,9 @@ export const WARTEZEIT = 30_000
  * das Label einer Möglichkeit ist (Block-Punkte): dann steht die Frage dabei, damit Claude auch nach
  * einer Compaction weiss, worauf sich „55 MB“ bezieht.
  */
-export type Teil = { titel: string; text: string; frage?: string }
+export type Teil = { titel: string; text: string; frage?: string; nr?: number }
 
-const teilKopf = (t: Teil) => `„${t.titel}“${t.frage !== undefined && t.frage !== '' ? ` (${t.frage})` : ''}`
+const teilKopf = (t: Teil) => `${t.nr !== undefined ? `#${t.nr} ` : ''}„${t.titel}“${t.frage !== undefined && t.frage !== '' ? ` (${t.frage})` : ''}`
 
 /**
  * Die gesammelten Antworten als eine Nachricht. Ist der letzte Text leer, endet sie
@@ -1065,9 +1137,9 @@ export const zuletztFertig = (punkte: readonly Punkt[], n = 8): Punkt[] =>
 export const ablageDaten = (a: Ablage, jetzt: number, installiert = ''): string =>
   JSON.stringify({
     punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)),
-    version: VERSION, stand: jetzt,
+    version: laufend, stand: jetzt,
     // Die installierte Fassung, wenn sie von der laufenden abweicht: die Sitzung braucht einen Neustart.
-    ...(installiert !== '' && installiert !== VERSION ? { installiert } : {}),
+    ...(installiert !== '' && installiert !== laufend ? { installiert } : {}),
   })
 
 /** Die installierte Fassung aus ~/.claude/plugins/installed_plugins.json; leer, wenn nicht lesbar. */
@@ -1083,9 +1155,9 @@ export function installierteVersion(text: string): string {
 
 /** Ist die installierte Fassung neuer als die laufende? Dann lohnt ein Neustart. */
 export const neuerAlsLaufend = (installiert: string): boolean => {
-  if (installiert === '' || installiert === VERSION) return false
+  if (installiert === '' || installiert === laufend) return false
   const a = installiert.split('.').map(Number)
-  const b = VERSION.split('.').map(Number)
+  const b = laufend.split('.').map(Number)
   for (let i = 0; i < 3; i++) {
     if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0)
   }

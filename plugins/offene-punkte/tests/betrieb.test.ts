@@ -667,7 +667,7 @@ describe('/offen <Nr> antwort <Text>', () => {
       const r = await befehl($, `1 antwort ${ANTWORT}`)
       await uhr.settle()
       expect(r).toContain('geht an Claude')
-      expect(texte).toEqual([`Zum offenen Punkt „${FREIGABE.titel}“: ${ANTWORT}`])
+      expect(texte).toEqual([`Zum offenen Punkt #1 „${FREIGABE.titel}“: ${ANTWORT}`])
 
       expect(await frageZeigt($, /Darf ich pushen\?/)).toBe(false)
       expect(await befehl($, '')).toBe(`Nichts offen.\n\nDatei: /projekt/offene-punkte/offen.md · Verlauf: antworten-JJJJ-MM-TT.md`)

@@ -13,9 +13,9 @@ import {
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
   ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
   EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
-  HINWEIS_BLOCK, aenderungenZuIds, blockLesen,
+  HINWEIS_BLOCK, aenderungenZuIds, abgelehnteAenderungen, beiClaudeFertig, blockLesen,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
-  VERSION, installierteVersion, neuerAlsLaufend,
+  installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, neuerAlsLaufend,
 } from './logik'
 import type { Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
@@ -104,6 +104,11 @@ let interaktiv = true
 let eingabeArt: 'mensch' | 'maschine' = 'mensch'
 // Laeuft gerade ein Turn? Der Abgleich wartet dann auf den naechsten Takt.
 let turnLaeuft = false
+/** Beginn und Text des laufenden Haupt-Turns: wann eine Antwort „bei Claude“ fertig ist. */
+let turnStart = 0
+let turnText = ''
+/** Was Claude mit der nächsten Nachricht erfahren soll (z. B. eine Änderung, die nicht ankam). */
+let hinweiseFuerClaude: string[] = []
 let abgleichLaeuft = false
 let abgleichTakt: Timer | null = null
 // Ab so viel Prozent des 5-Stunden-Fensters kein Haiku mehr (Option haikuBisProzent).
@@ -231,13 +236,17 @@ async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number
  * Fassung von der laufenden ab, sagt es ein Toast, und offen.json traegt "installiert" fuer claude-web.
  */
 async function versionPruefen($: EngineInterface) {
+  // Die laufende Fassung steht in der plugin.json des geladenen Ordners (je Fassung ein eigener im Cache) -
+  // so kann sie nicht hinter dem Manifest zurückbleiben.
+  const root = String($.plugin.root ?? '').replace(/[\\/]+$/, '')
+  if (root !== '') laufendeVersionSetzen(manifestVersion(await $.fs.read(`${root}/.claude-plugin/plugin.json`).then(t => String(t)).catch(() => '')))
   const home = (await $.env.get('HOME').catch(() => undefined)) ?? (await $.env.get('USERPROFILE').catch(() => undefined))
   if (home === undefined) return
   const text = await $.fs.read(`${home.replace(/[\\/]+$/, '')}/.claude/plugins/installed_plugins.json`).then(t => String(t)).catch(() => '')
   installiert = installierteVersion(text)
   if (neuerAlsLaufend(installiert)) {
-    $.ui.toast(`offene-punkte ${installiert} ist installiert, diese Sitzung läuft noch ${VERSION} – ein Neustart lädt die neue Fassung`, { timeoutMs: 10_000 })
-    $.ui.log(`offene-punkte: läuft ${VERSION}, installiert ${installiert}`)
+    $.ui.toast(`offene-punkte ${installiert} ist installiert, diese Sitzung läuft noch ${laufendeVersion()} – ein Neustart lädt die neue Fassung`, { timeoutMs: 10_000 })
+    $.ui.log(`offene-punkte: läuft ${laufendeVersion()}, installiert ${installiert}`)
   }
 }
 
@@ -589,7 +598,7 @@ const teileVon = (punkte: readonly Punkt[]): Teil[] => punkte.map(p => {
   const text = p.ausstehend?.text ?? ''
   // Nur ein Label (Block-Punkt): die Frage kommt dazu, damit Claude den Bezug auch nach einer Compaction kennt.
   const kurz = text !== '' && p.optionen.some(o => o.antwort === text && o.label === text)
-  return { titel: p.titel, text, ...(kurz ? { frage: p.frage } : {}) }
+  return { titel: p.titel, text, ...(p.nr !== undefined ? { nr: p.nr } : {}), ...(kurz ? { frage: p.frage } : {}) }
 })
 
 /** Punkte anlegen, aendern und schliessen - aus dem Werkzeug (Kennung c) oder aus dem Block in der Antwort (b). */
@@ -607,11 +616,27 @@ async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aende
   // Erwaehnt sind hier alle: ein Eintrag laesst keinen Punkt altern.
   const alle = offene(vorher).map(p => p.id)
   const aktualisiert = aenderungenZuIds(vorher, aenderungen)
+  const abgelehnt = abgelehnteAenderungen(vorher, aenderungen)
   const zu = await aendere($, l => perMarkeSchliessen(
     zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt))
   const bekannt = new Set(vorher.map(p => p.id))
   const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
   if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
+  // Claude hat einen schon erledigten (oder gerade beantworteten) Punkt geaendert: er ist wieder offen.
+  const warZu = new Set(vorher.filter(p => p.status !== 'offen').map(p => p.id))
+  const wieder = aktualisiert.filter(a => warZu.has(a.id)).map(a => vorher.find(p => p.id === a.id)!)
+  if (wieder.length > 0) $.ui.toast(wieder.map(p => `↺ #${p.nr} „${p.titel}“ wieder offen`).join(' · ') + ' – Claude hat ihn geändert', { timeoutMs: 6000 })
+  // Verworfen oder unbekannt: nicht still verlieren - der Nutzer sieht es, Claude erfährt es mit der naechsten Nachricht.
+  if (abgelehnt.length > 0) {
+    const zeilen = abgelehnt.map(a => {
+      const p = vorher.find(x => x.nr === a.nr)
+      return p !== undefined
+        ? `#${a.nr} „${p.titel}“ ist vom Nutzer verworfen (nicht relevant)`
+        : `#${a.nr} gibt es nicht`
+    })
+    $.ui.toast(`Änderung nicht übernommen: ${zeilen.join(' · ')}`, { timeoutMs: 8000 })
+    hinweiseFuerClaude.push(`offene-punkte: Deine Änderung kam nicht an – ${zeilen.join('; ')}. Brauchst du das noch vom Nutzer, leg einen neuen Punkt an.`)
+  }
   return { angelegt, geaendert: aktualisiert.length, zu, doppelt: neu.length - angelegt.length, nichtOffen: marken.length - zu.length }
 }
 
@@ -694,13 +719,14 @@ async function senden($: EngineInterface, wo: 'sammlung' | 'eingabe' = 'sammlung
   const ids = new Set(liste.map(p => p.id))
   for (const id of ids) unterwegs.add(id)
   const text = sammelText(teileVon(liste))
+  const gesendet = await $.clock.now()
   // Haiku soll bei der naechsten Auswertung wissen, was der Nutzer gerade beantwortet hat.
   letzteEingabe = text
   // Als eigene Nachricht des Nutzers; laeuft gerade eine Antwort, kommt sie danach. Ausserhalb
   // des aufrufenden Hooks: aus /offen (command.run) heraus lehnt die Engine ein submit ab.
   $.clock.after(0, () => {
     void $.prompt.submit({ text, asUser: true })
-      .then(r => aendere($, l => ('drop' in r && r.drop !== undefined ? zuruecknehmen(l, ids) : abschliessen(l, ids))))
+      .then(r => aendere($, l => ('drop' in r && r.drop !== undefined ? zuruecknehmen(l, ids) : abschliessen(l, ids, undefined, gesendet))))
       .catch(async fehler => {
         $.ui.log(`offene-punkte: nicht gesendet (${String(fehler)})`)
         await aendere($, l => zuruecknehmen(l, ids))
@@ -805,7 +831,7 @@ async function inEingabe($: EngineInterface, punkt: Punkt, w: Wahl) {
       return p
     })
   })
-  await eintragen($, sammelText([...teileVon(mit), { titel: punkt.titel, text: w.text }]).trimEnd() + ' ')
+  await eintragen($, sammelText([...teileVon(mit), { titel: punkt.titel, text: w.text, ...(punkt.nr !== undefined ? { nr: punkt.nr } : {}) }]).trimEnd() + ' ')
 }
 
 /** Eine fertige Antwort: gesammelt - oder in die Eingabe, wenn dort schon Antworten auf das Abschicken warten. */
@@ -1100,8 +1126,11 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   }
   if (punkt === undefined) {
     const beantwortet = ausstehende(alle).find(p => p.nr === k.nummer)
-    return beantwortet !== undefined
-      ? `„${beantwortet.titel}“ ist schon beantwortet und geht mit den übrigen Antworten an Claude.`
+    if (beantwortet !== undefined) return `„${beantwortet.titel}“ ist schon beantwortet und geht mit den übrigen Antworten an Claude.`
+    const geschlossen = alle.filter(p => p.nr === k.nummer && p.status !== 'offen')
+      .sort((a, b) => (b.geaendert ?? b.erstellt) - (a.geaendert ?? a.erstellt))[0]
+    return geschlossen !== undefined
+      ? `#${k.nummer} „${geschlossen.titel}“ ist schon ${geschlossen.status === 'verworfen' ? 'verworfen' : 'erledigt'}${geschlossen.ergebnis ? ` (${geschlossen.ergebnis.slice(0, 120)})` : ''} – /offen ${k.nummer} aktuell öffnet ihn wieder.`
       : `Punkt ${k.nummer} gibt es nicht – /offen zeigt die Nummern.`
   }
   if (k.tun === 'antwort') {
@@ -1222,8 +1251,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('turn.start', async (_, e, next) => {
+  on('turn.start', async ($, e, next) => {
     turnLaeuft = true
+    turnStart = await $.clock.now()
+    turnText = e.text
     return next(e)
   })
 
@@ -1302,7 +1333,10 @@ export const register: Register = (on, options) => {
     const liste = interaktiv ? listeFuerClaude(punkte, await sicht($)) : ''
     const mitListe = liste !== '' && liste !== claudeKennt
     if (mitListe) claudeKennt = liste
-    const kontext = mitListe ? { context: [...(e.context ?? []), liste] } : {}
+    const hinweise = hinweiseFuerClaude
+    hinweiseFuerClaude = []
+    const zusatz = [...(mitListe ? [liste] : []), ...hinweise]
+    const kontext = zusatz.length > 0 ? { context: [...(e.context ?? []), ...zusatz] } : {}
     if (mit.length + eingabe.length + getippt.length === 0) return next({ ...e, ...kontext })
 
     zeitgeber?.cancel()
@@ -1322,6 +1356,7 @@ export const register: Register = (on, options) => {
       // Was der Nutzer ergaenzt hat, kommt hinter die Wahl - nicht die Wahl selbst noch einmal.
       ergebnisse.set(p.id, t !== '' && t !== p.ausstehend?.text ? `${p.ausstehend?.ergebnis} – „${t}“` : String(p.ausstehend?.ergebnis))
     }
+    const gesendet = await $.clock.now()
     const r = await next({ ...e, text, ...kontext })
     const angekommen = !('drop' in r && r.drop !== undefined)
     // Nicht hier warten: das Schliessen schreibt Dateien.
@@ -1332,9 +1367,9 @@ export const register: Register = (on, options) => {
         const mitSelbst = l.map(p => {
           const t = selbst.get(p.id)
           if (t === undefined || p.status !== 'offen' || p.ausstehend !== undefined) return p
-          return { ...p, status: 'erledigt' as const, ergebnis: t !== '' ? `eigene Antwort – „${t.slice(0, 300)}“` : 'eigene Antwort' }
+          return { ...p, status: 'erledigt' as const, ergebnis: t !== '' ? `eigene Antwort – „${t.slice(0, 300)}“` : 'eigene Antwort', beiClaude: gesendet }
         })
-        return zuruecknehmen(abschliessen(mitSelbst, ids, ergebnisse), weg)
+        return zuruecknehmen(abschliessen(mitSelbst, ids, ergebnisse, gesendet), weg)
       }).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
     })
     return r
@@ -1410,6 +1445,15 @@ export const register: Register = (on, options) => {
     if (blockDa) {
       $.clock.after(0, () => {
         void punkteEintragen($, block.neu, block.aenderungen, [], 'b').catch(fehler => $.ui.log(`offene-punkte: Block (${String(fehler)})`))
+      })
+    }
+    // Nach Marken und Block (beide oben eingereiht): was bei Claude lag und weder bestaetigt noch
+    // wieder geoeffnet wurde, ist nur noch beantwortet. Kaeme es doch zuerst, oeffnet der Block trotzdem.
+    if (e.agentId === undefined && e.reason === 'answer') {
+      const start = turnStart
+      const text = turnText
+      $.clock.after(0, () => {
+        void aendere($, l => beiClaudeFertig(l, start, text)).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }
     // Nach Maschinen-Eingaben (Peer, Zeitplan, Klaerung) und ohne Menschen davor: nur Marken und Block.
@@ -1646,7 +1690,7 @@ export const register: Register = (on, options) => {
         {fertig.map(p => (
           <Box key={`f-${p.id}`} flexDirection="row">
             <Text dimColor strikethrough={p.status === 'verworfen'}>
-              {p.status === 'verworfen' ? '✗' : p.auto !== undefined ? '🤖' : '✓'} {p.titel}{p.ergebnis ? `: ${p.ergebnis}` : ''}
+              {p.status === 'verworfen' ? '✗' : p.beiClaude !== undefined ? '⏳' : p.auto !== undefined ? '🤖' : '✓'} {p.titel}{p.ergebnis ? `: ${p.ergebnis}` : ''}{p.beiClaude !== undefined ? ' – bei Claude' : ''}
             </Text>
             <Text> </Text>
             <Button key={`auf-${p.id}`} label="Wieder öffnen" onPress={() => void wiederOeffnen($, p.id)} />

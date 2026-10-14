@@ -72,6 +72,12 @@ export type Punkt = {
   /** Beantwortet, aber noch nicht bei Claude. */
   ausstehend?: Ausstehend
   /**
+   * Beantwortet und an Claude gegangen (Zeitpunkt des Sendens), aber noch nicht umgesetzt gemeldet:
+   * „erledigt: #N“ bestätigt, eine Änderung „# #N“ öffnet wieder, sonst fällt es am Ende des
+   * nächsten Turns weg. Der Punkt ist dabei schon erledigt (offen.json und claude-web unverändert).
+   */
+  beiClaude?: number
+  /**
    * Die Sitzung, die den Punkt führt. Punkte einer anderen Sitzung im selben Projekt
    * stehen in /offen, werden aber nicht gefragt. Fehlt bei älteren Fassungen: eigene.
    */
