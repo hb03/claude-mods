@@ -15,6 +15,19 @@ export function k(n: number): string {
   return Math.round(n / 1000) + 'k'
 }
 
+/** "200k", "1,5m", "200.000", "aus" → Tokens (0 = aus); null, wenn es keine sinnvolle Schwelle ist. */
+export function tokenWert(eingabe: string): number | null {
+  const s = eingabe.trim().toLowerCase().replace(/\s+/g, '')
+  if (s === 'aus' || s === '0') return 0
+  const mitEinheit = /^(\d+(?:[.,]\d+)?)(k|m)$/.exec(s)
+  const n = mitEinheit
+    ? Number(mitEinheit[1]!.replace(',', '.')) * (mitEinheit[2] === 'm' ? 1_000_000 : 1000)
+    : /^\d{1,3}(?:[._]?\d{3})*$/.test(s) ? Number(s.replace(/[._]/g, '')) : NaN
+  if (!Number.isFinite(n)) return null
+  const gerundet = Math.round(n)
+  return gerundet >= 10_000 && gerundet <= 2_000_000 ? gerundet : null
+}
+
 export function dauer(ms: number): string {
   if (ms < MIN) return Math.max(0, Math.round(ms / 1000)) + ' s'
   return Math.round(ms / MIN) + ' min'

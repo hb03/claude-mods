@@ -13,6 +13,7 @@ import {
   k,
   modellName,
   segmente,
+  tokenWert,
   trefferquote,
   uhrzeit,
 } from './logik'
@@ -43,6 +44,9 @@ function ausUsage(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>, alt:
 let ttlEinstellung = 'auto'
 let warnProzent = 60
 let warnTokens = 0
+// Wert aus den Plugin-Optionen; /kontext warn überschreibt ihn rechnerweit über einstellungsDatei.
+let warnTokensOption = 0
+let einstellungsDatei: string | undefined
 let systemMeldung = false
 // Bereits gezeigte Einblendungen; ein Schlüssel wird wieder frei, sobald sein Hinweis verschwindet.
 const gezeigt = new Set<string>()
@@ -59,6 +63,38 @@ let probeBis = 0
 // Datei, aus der die Statuszeile (~/.claude/statusline.sh) die Werte des Mods liest; gesetzt in session.start.
 let statusDatei: string | undefined
 let letzterDateiInhalt: string | undefined
+
+/** Liest die mit /kontext warn gesetzte Schwelle; so übernehmen alle Sitzungen des Rechners sie im nächsten Takt. */
+async function einstellungLaden($: EngineInterface) {
+  if (!einstellungsDatei) return
+  const text = await $.fs.read(einstellungsDatei).then(t => String(t)).catch(() => '')
+  let wert: unknown
+  try {
+    wert = text ? JSON.parse(text).warnTokens : undefined
+  } catch {
+    wert = undefined
+  }
+  warnTokens = typeof wert === 'number' && wert >= 0 ? wert : warnTokensOption
+}
+
+async function warnBefehl($: EngineInterface, wert: string | undefined): Promise<string> {
+  const stand = () => (warnTokens > 0 ? `Kontext-Hinweis ab ${k(warnTokens)} Tokens` : 'Kontext-Hinweis nach Tokens ist aus')
+  if (!wert) {
+    return `${stand()}${warnTokens === warnTokensOption ? ' (Plugin-Option)' : ' (gesetzt mit /kontext warn)'}.\nÄndern: /kontext warn 300k · aus: /kontext warn aus · zurück zur Plugin-Option: /kontext warn standard`
+  }
+  if (!einstellungsDatei) return 'Kein Home-Verzeichnis gefunden – die Schwelle lässt sich hier nur über die Plugin-Option setzen.'
+  if (wert.toLowerCase() === 'standard') {
+    await $.fs.write(einstellungsDatei, '{}\n')
+    warnTokens = warnTokensOption
+  } else {
+    const n = tokenWert(wert)
+    if (n === null) return `„${wert}“ verstehe ich nicht. Beispiele: 200k, 350000, 1m, aus (10k bis 2m).`
+    await $.fs.write(einstellungsDatei, JSON.stringify({ warnTokens: n }) + '\n')
+    warnTokens = n
+  }
+  await pruefeHinweise($)
+  return `${stand()} – gilt für alle Sitzungen auf diesem Rechner (andere übernehmen es binnen 30 s).`
+}
 
 async function pruefeHinweise($: EngineInterface) {
   const [m, c, arbeitet] = await Promise.all([read($, messungA), read($, cacheA), read($, arbeitetA)])
@@ -174,7 +210,8 @@ async function messen($: EngineInterface, mitAufschluesselung: boolean) {
 export const register: Register = (on, options) => {
   ttlEinstellung = String(options.cacheTtl ?? 'auto')
   warnProzent = Number(options.warnProzent ?? 60)
-  warnTokens = Number(options.warnTokens ?? 0)
+  warnTokensOption = Number(options.warnTokens ?? 0)
+  warnTokens = warnTokensOption
   systemMeldung = options.systemMeldung === true
   probeBis = 0
   letzterDateiInhalt = undefined
@@ -187,14 +224,17 @@ export const register: Register = (on, options) => {
     // Windows kennt HOME oft nicht; Git-Bash sieht USERPROFILE als $HOME, also landet die Datei am selben Ort.
     const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
     statusDatei = home ? `${home}/.claude/kontext-anzeige/${await $.session.id()}.json` : undefined
+    einstellungsDatei = home ? `${home}/.claude/kontext-anzeige/einstellungen.json` : undefined
+    await einstellungLaden($)
     await $.command.register({
       name: 'kontext',
-      description: 'Kontext, Prompt-Cache, Compact-Verlauf und Limits im Detail',
+      description: 'Kontext, Prompt-Cache, Compact-Verlauf und Limits im Detail; /kontext warn 300k setzt die Token-Schwelle',
     })
     await update($, jetztA, () => Date.now())
     takt?.cancel()
     takt = $.clock.every(TAKT_MS, async () => {
       await update($, jetztA, () => Date.now())
+      await einstellungLaden($)
       await pruefeHinweise($)
     })
     await messen($, true).catch(() => undefined)
@@ -337,7 +377,9 @@ export const register: Register = (on, options) => {
    }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'kontext' }, async ($, e) => {
-    if (e.args.trim() === 'test') return { text: await probe($) }
+    const [wort, wert] = e.args.trim().split(/\s+/)
+    if (wort === 'test') return { text: await probe($) }
+    if (wort === 'warn') return { text: await warnBefehl($, wert) }
     const u = await $.session.usage({ breakdown: 'summary' })
     const [c, verlauf] = await Promise.all([read($, cacheA), read($, verlaufA)])
     const m = await read($, messungA)

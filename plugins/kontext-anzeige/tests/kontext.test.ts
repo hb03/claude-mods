@@ -1,7 +1,24 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { CacheStand, Messung } from '../types'
-import { MIN, einpassen, feinbalken, hinweise, k, modellName, segmente } from '../hooks/logik'
+import { MIN, einpassen, feinbalken, hinweise, k, modellName, segmente, tokenWert } from '../hooks/logik'
+
+describe('Token-Schwelle per Befehl', () => {
+  test('versteht übliche Schreibweisen', async () => {
+    expect(tokenWert('200k')).toBe(200_000)
+    expect(tokenWert('1,5m')).toBe(1_500_000)
+    expect(tokenWert('350000')).toBe(350_000)
+    expect(tokenWert('200.000')).toBe(200_000)
+    expect(tokenWert('aus')).toBe(0)
+  })
+
+  test('lehnt Unsinn und Werte außerhalb 10k bis 2m ab', async () => {
+    expect(tokenWert('viel')).toBeNull()
+    expect(tokenWert('5k')).toBeNull()
+    expect(tokenWert('3m')).toBeNull()
+    expect(tokenWert('200.5')).toBeNull()
+  })
+})
 
 const JETZT = 1_800_000_000_000
 
