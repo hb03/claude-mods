@@ -9,7 +9,7 @@ export const VERALTET_NACH = 10
 /** Ein Angebot, auf das so viele Antworten lang niemand eingeht, gilt als stilles Nein. */
 export const ANGEBOT_VERFALL = 4
 /** Muss zu .claude-plugin/plugin.json passen; steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt. */
-export const VERSION = '0.16.1'
+export const VERSION = '0.16.2'
 /** So oft prüft eine laufende Sitzung, ob ein Abgleich fällig ist - Server-Sitzungen laufen tagelang ohne Neustart. */
 export const ABGLEICH_TAKT_MS = 60 * 60_000
 /** Ab so viel Prozent des 5-Stunden-Fensters ruft der Mod kein Haiku mehr (Option haikuBisProzent). */
@@ -278,12 +278,20 @@ export function schlussMarken(antwort: string): Marke[] {
     const grund = (m[3] ?? '').trim().replace(/[*_`]+$/, '').slice(0, 120)
     for (const n of (m[2] ?? '').matchAll(/#(\d+)/g)) aus.set(`#${n[1]}`, { nr: Number(n[1]), ueberholt, grund })
   }
+  // Tippvarianten: „erledigt #3“, „erledigt: Punkt 3“, „#3 erledigt“ - nicht aber Prosa wie „Punkt 3 ist erledigt“.
+  const locker = /(erledigt|überholt|ueberholt|hinfällig)(?::[ \t]*|[ \t]+)(?:Punkt[ \t]+#?|#)(\d+)(?![\d,])|#(\d+)[ \t]+(erledigt|überholt|ueberholt|hinfällig)\b/gi
+  for (const m of antwort.matchAll(locker)) {
+    const wort = (m[1] ?? m[4] ?? '').toLowerCase()
+    const nr = Number(m[2] ?? m[3])
+    if (!aus.has(`#${nr}`)) aus.set(`#${nr}`, { nr, ueberholt: wort !== 'erledigt', grund: '' })
+  }
   const perTitel = /^[ \t]*[*_]*(erledigt|überholt|ueberholt|hinfällig):[*_]*[ \t]*([^#\s][^\n]*)$/gim
   for (const m of antwort.matchAll(perTitel)) {
     const ueberholt = !/^erledigt$/i.test(m[1] ?? '')
     const [roh, ...rest] = (m[2] ?? '').split(/[ \t]+[–—-][ \t]+/)
     const titel = (roh ?? '').replace(/[*_`„“"]+/g, '').trim()
-    if (titel === '' || titel.length > 80) continue
+    // „Punkt 4“ ist eine Nummer (oben schon gelesen), kein Titel.
+    if (titel === '' || titel.length > 80 || /^Punkt\s+#?\d+$/i.test(titel)) continue
     aus.set(`t:${schluessel(titel)}`, { nr: -1, ueberholt, grund: rest.join(' – ').trim().replace(/[*_`]+$/, '').slice(0, 120), titel })
   }
   return [...aus.values()]
@@ -1040,8 +1048,35 @@ export const zuletztFertig = (punkte: readonly Punkt[], n = 8): Punkt[] =>
   punkte.filter(p => p.status !== 'offen').sort((x, y) => (y.geaendert ?? y.erstellt) - (x.geaendert ?? x.erstellt)).slice(0, n)
 
 /** Die Daten für die nächste Sitzung und für claude-web (offen.json) - mit Fassung und Zeitpunkt des Schreibens. */
-export const ablageDaten = (a: Ablage, jetzt: number): string =>
-  JSON.stringify({ punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)), version: VERSION, stand: jetzt })
+export const ablageDaten = (a: Ablage, jetzt: number, installiert = ''): string =>
+  JSON.stringify({
+    punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)),
+    version: VERSION, stand: jetzt,
+    // Die installierte Fassung, wenn sie von der laufenden abweicht: die Sitzung braucht einen Neustart.
+    ...(installiert !== '' && installiert !== VERSION ? { installiert } : {}),
+  })
+
+/** Die installierte Fassung aus ~/.claude/plugins/installed_plugins.json; leer, wenn nicht lesbar. */
+export function installierteVersion(text: string): string {
+  try {
+    const d = JSON.parse(text) as { plugins?: Record<string, { version?: unknown }[]> }
+    const eintrag = Object.entries(d.plugins ?? {}).find(([name]) => name.startsWith('offene-punkte@'))?.[1]?.[0]
+    return typeof eintrag?.version === 'string' ? eintrag.version : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Ist die installierte Fassung neuer als die laufende? Dann lohnt ein Neustart. */
+export const neuerAlsLaufend = (installiert: string): boolean => {
+  if (installiert === '' || installiert === VERSION) return false
+  const a = installiert.split('.').map(Number)
+  const b = VERSION.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0)
+  }
+  return false
+}
 
 export function ablageText(a: Ablage, jetzt: number): string {
   // Auch was beantwortet, aber noch nicht bei Claude ist: es kommt in der nächsten Sitzung wieder.

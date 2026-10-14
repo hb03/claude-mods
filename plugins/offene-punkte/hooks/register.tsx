@@ -15,6 +15,7 @@ import {
   EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
   HINWEIS_BLOCK, aenderungenZuIds, blockLesen,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
+  VERSION, installierteVersion, neuerAlsLaufend,
 } from './logik'
 import type { Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
@@ -114,6 +115,8 @@ let fertigeTurns = 0
 let eingangTakt: Timer | null = null
 let eingangLaeuft = false
 let letzterMensch = 0
+// Die installierte Fassung (installed_plugins.json), wenn sie von der laufenden abweicht - steht in offen.json.
+let installiert = ''
 
 async function sicht($: EngineInterface): Promise<Sicht> {
   return { sitzung, jetzt: await $.clock.now() }
@@ -210,7 +213,7 @@ async function speichern($: EngineInterface, mitAbgleich = true) {
   await schreiben($, datei, ablageText(daten, jetzt))
     .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`))
   // Dieselben Daten als reine JSON-Datei fuer claude-web; der Block in offen.md bleibt fuer aeltere Sitzungen.
-  await schreiben($, `${o.ordner}/offen.json`, `${ablageDaten(daten, jetzt)}\n`)
+  await schreiben($, `${o.ordner}/offen.json`, `${ablageDaten(daten, jetzt, installiert)}\n`)
     .catch(fehler => $.ui.log(`offene-punkte: offen.json nicht geschrieben (${String(fehler)})`))
 }
 
@@ -221,6 +224,21 @@ async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number
   const alt = await $.fs.read(datei).then(t => String(t)).catch(() => verlaufKopf(jetzt))
   await schreiben($, datei, `${alt}\n${eintraege.join('\n')}`)
     .catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht geschrieben (${String(fehler)})`))
+}
+
+/**
+ * Versionsdrift: Sitzungen laufen tagelang und laden Updates erst beim Neustart. Weicht die installierte
+ * Fassung von der laufenden ab, sagt es ein Toast, und offen.json traegt "installiert" fuer claude-web.
+ */
+async function versionPruefen($: EngineInterface) {
+  const home = (await $.env.get('HOME').catch(() => undefined)) ?? (await $.env.get('USERPROFILE').catch(() => undefined))
+  if (home === undefined) return
+  const text = await $.fs.read(`${home.replace(/[\\/]+$/, '')}/.claude/plugins/installed_plugins.json`).then(t => String(t)).catch(() => '')
+  installiert = installierteVersion(text)
+  if (neuerAlsLaufend(installiert)) {
+    $.ui.toast(`offene-punkte ${installiert} ist installiert, diese Sitzung läuft noch ${VERSION} – ein Neustart lädt die neue Fassung`, { timeoutMs: 10_000 })
+    $.ui.log(`offene-punkte: läuft ${VERSION}, installiert ${installiert}`)
+  }
 }
 
 /** Darf der Mod gerade Haiku rufen? Nicht ohne Menschen davor und nicht, wenn das 5-Stunden-Fenster fast voll ist. */
@@ -1140,6 +1158,7 @@ export const register: Register = (on, options) => {
   eingangTakt = null
   eingangLaeuft = false
   letzterMensch = 0
+  installiert = ''
 
   on('session.start', async ($, e, next) => {
     // Ohne Menschen davor (claude -p, SDK) bleibt der Mod still: kein Werkzeug, kein Hinweis, kein Haiku -
@@ -1161,6 +1180,7 @@ export const register: Register = (on, options) => {
     }
     await update($, prueftA, () => false)
     sitzung = await $.session.id().catch(() => '')
+    await versionPruefen($).catch(() => undefined)
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
     $.clock.after(0, () => {
       void verlaufAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht aufgeräumt (${String(fehler)})`))
