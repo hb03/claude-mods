@@ -51,6 +51,21 @@ Statuszeile – ebenfalls in `~/.claude/settings.json`; der Pfad ist der, unter 
 
 Unter Windows: `"command": "\"C:/Program Files/Git/bin/bash.exe\" C:/Users/<name>/.claude/plugins/marketplaces/eigene-plugins/statusline.sh"`.
 
+Neue Plugins automatisch installieren: `plugins-abgleich.sh` als SessionStart-Hook. Er installiert beim
+Start jedes Plugin aus dem Marktplatz, das unter `enabledPlugins` noch keinen Eintrag hat; deaktivierte
+bleiben aus. Updates macht `autoUpdate`. Braucht `jq`.
+
+```json
+"hooks": {
+  "SessionStart": [
+    { "hooks": [ { "type": "command", "command": "bash ~/.claude/plugins/marketplaces/eigene-plugins/plugins-abgleich.sh", "timeout": 120 } ] }
+  ]
+}
+```
+
+Alles zusammen richtet der Skill `skills/plugins-einrichten` ein (als ZIP auf claude.ai hochladen, dann steht er
+auf jedem Rechner bereit): „Plugins einrichten“ genügt.
+
 ## Hinweise
 
 - Die Mods nutzen die Plugin-Schnittstelle für Mods (Function Hooks) von Claude Code; sie ist noch als *early access*
