@@ -17,7 +17,14 @@ Läuft unter Linux, macOS und Windows (Git-Bash); braucht `jq` und `gawk`. Am be
 
 ## Installieren
 
-In Claude Code:
+Unter Windows alles auf einmal (git, jq, Claude Code, Marketplace mit Auto-Update, alle Plugins, Hook,
+Statuszeile), in PowerShell:
+
+```
+irm https://raw.githubusercontent.com/hb03/claude-mods/main/einrichten.ps1 | iex
+```
+
+Von Hand, in Claude Code:
 
 ```
 /plugin marketplace add hb03/claude-mods
