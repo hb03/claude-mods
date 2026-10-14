@@ -60,8 +60,8 @@ describe('Block in der Antwort', () => {
   test('der Hinweis erklärt den Block und die Marken', () => {
     expect(HINWEIS_BLOCK).toContain('```offen')
     expect(HINWEIS_BLOCK).toContain('erledigt: #<Nr>')
-    // geht in jede Sitzung: knapp halten (0.16.6: +„bei dir“-Satz)
-    expect(HINWEIS_BLOCK.length).toBeLessThan(1_800)
+    // geht in jede Sitzung: knapp halten (0.16.6: +„bei dir“-Satz, 0.16.7: +Nummern nicht raten)
+    expect(HINWEIS_BLOCK.length).toBeLessThan(2_000)
   })
 
   test('Antwort mit Label: die Frage steht dabei, antwortIn findet den Text trotzdem', () => {

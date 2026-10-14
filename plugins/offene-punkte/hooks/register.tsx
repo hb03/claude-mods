@@ -7,7 +7,7 @@ import {
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
-  HINWEIS_CLAUDE, HINWEIS_WERKZEUG, autoErledigt, schlussMarken, perMarkeSchliessen,
+  HINWEIS_CLAUDE, HINWEIS_WERKZEUG, autoErledigt, schlussMarken, perMarkeSchliessen, markenHinweis, markenOhneTreffer,
   WERKZEUG, WERKZEUG_BESCHREIBUNG, WERKZEUG_SCHEMA, altern, nachfassen, werkzeugLesen,
   listeFuerClaude, veraltetSchliessen, zuletztGeschlossen, zuletztFertig,
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
@@ -106,6 +106,8 @@ let eingabeArt: 'mensch' | 'maschine' = 'mensch'
 let turnLaeuft = false
 /** Beginn und Text des laufenden Haupt-Turns: wann eine Antwort „bei Claude“ fertig ist. */
 let turnStart = 0
+/** Wann die letzte Nachricht kam (auch von Maschinen): was seitdem geschlossen wurde, hat eine Marke nicht verfehlt. */
+let eingangZeit = 0
 let turnText = ''
 /** Was Claude mit der nächsten Nachricht erfahren soll (z. B. eine Änderung, die nicht ankam). */
 let hinweiseFuerClaude: string[] = []
@@ -618,10 +620,14 @@ async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aende
   const aktualisiert = aenderungenZuIds(vorher, aenderungen)
   const abgelehnt = abgelehnteAenderungen(vorher, aenderungen)
   const zu = await aendere($, l => perMarkeSchliessen(
-    zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt))
+    zusammenfuehren(l, { neu, aktualisiert, erledigt: [], erwaehnt: alle, ueberblick: '' }, jetzt, neueId, ab), marken, jetzt, sitzung))
   const bekannt = new Set(vorher.map(p => p.id))
   const angelegt = (await read($, punkteA)).filter(p => !bekannt.has(p.id))
   if (angelegt.length > 0) $.ui.toast(angelegt.length === 1 ? '1 neuer offener Punkt – Frage über der Eingabe' : `${angelegt.length} neue offene Punkte – Frage über der Eingabe`, { timeoutMs: 5000 })
+  // Aus dem Block kennt Claude die vergebenen Nummern nicht (das Werkzeug nennt sie im Ergebnis): mit der naechsten Nachricht.
+  if (kennung === 'b' && angelegt.length > 0) {
+    hinweiseFuerClaude.push(`offene-punkte: Dein Block hat angelegt: ${angelegt.map(p => `#${p.nr ?? '?'} „${p.titel}“`).join(', ')}. Mit diesen Nummern schließt du sie.`)
+  }
   // Claude hat einen schon erledigten (oder gerade beantworteten) Punkt geaendert: er ist wieder offen.
   const warZu = new Set(vorher.filter(p => p.status !== 'offen').map(p => p.id))
   const wieder = aktualisiert.filter(a => warZu.has(a.id)).map(a => vorher.find(p => p.id === a.id)!)
@@ -637,7 +643,7 @@ async function punkteEintragen($: EngineInterface, neu: Auswertung['neu'], aende
     $.ui.toast(`Änderung nicht übernommen: ${zeilen.join(' · ')}`, { timeoutMs: 8000 })
     hinweiseFuerClaude.push(`offene-punkte: Deine Änderung kam nicht an – ${zeilen.join('; ')}. Brauchst du das noch vom Nutzer, leg einen neuen Punkt an.`)
   }
-  return { angelegt, geaendert: aktualisiert.length, zu, doppelt: neu.length - angelegt.length, nichtOffen: marken.length - zu.length }
+  return { angelegt, geaendert: aktualisiert.length, zu, doppelt: neu.length - angelegt.length, ohneTreffer: markenOhneTreffer(vorher, marken, sitzung, eingangZeit) }
 }
 
 // ---------------------------------------------------------------- Gedanken
@@ -1301,15 +1307,27 @@ export const register: Register = (on, options) => {
   const MASCHINEN = new Set(['sdk', 'task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'channel'])
 
   on('prompt.submit', async ($, e, next) => {
+    eingangZeit = await $.clock.now()
+    const punkte = await read($, punkteA).catch((): Punkt[] => [])
+    // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (und nach einer Compaction):
+    // Claude kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist. Auch zu
+    // Maschinen-Eingaben - sonst erfaehrt Claude Nummern und Rueckmeldungen erst Turns spaeter.
+    const liste = interaktiv ? listeFuerClaude(punkte, await sicht($)) : ''
+    const mitListe = liste !== '' && liste !== claudeKennt
+    if (mitListe) claudeKennt = liste
+    const hinweise = hinweiseFuerClaude
+    hinweiseFuerClaude = []
+    const zusatz = [...(mitListe ? [liste] : []), ...hinweise]
+    const kontext = zusatz.length > 0 ? { context: [...(e.context ?? []), ...zusatz] } : {}
     if (MASCHINEN.has(e.origin.kind)) {
       eingabeArt = 'maschine'
-      return next(e)
+      return next({ ...e, ...kontext })
     }
     // Nur was der Nutzer selbst schreibt, an der Tastatur oder am Handy - eine Antwort aus der Auswahl kennt
     // der Mod schon. Die eigene Klaerung (/offen klaeren) zaehlt wie claude-webs Klaerung als Maschine.
     if (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge') {
       if (istMaschinenEingabe(e.text)) eingabeArt = 'maschine'
-      return next(e)
+      return next({ ...e, ...kontext })
     }
     // claude-webs Klaerung kommt per tmux wie getippt an: wie eine Maschine behandeln.
     eingabeArt = istMaschinenEingabe(e.text) ? 'maschine' : 'mensch'
@@ -1319,7 +1337,6 @@ export const register: Register = (on, options) => {
     ticker?.cancel()
     ticker = null
     $.clock.after(0, () => void update($, abschickenA, () => ({ sekunden: 0, inEingabe: false })))
-    const punkte = await read($, punkteA).catch((): Punkt[] => [])
     const mit = gesammelt(punkte)
     const eingabe = ausstehende(punkte, 'eingabe')
     // Selbst geschriebene Antworten („Zum offenen Punkt „Titel“: …“, auch von claude-web per tmux):
@@ -1328,15 +1345,6 @@ export const register: Register = (on, options) => {
     // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
     const text = mit.length > 0 ? `${sammelText(teileVon(mit))}\n\n${e.text}` : e.text
     letzteEingabe = text
-    // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (und nach einer Compaction):
-    // Claude kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist.
-    const liste = interaktiv ? listeFuerClaude(punkte, await sicht($)) : ''
-    const mitListe = liste !== '' && liste !== claudeKennt
-    if (mitListe) claudeKennt = liste
-    const hinweise = hinweiseFuerClaude
-    hinweiseFuerClaude = []
-    const zusatz = [...(mitListe ? [liste] : []), ...hinweise]
-    const kontext = zusatz.length > 0 ? { context: [...(e.context ?? []), ...zusatz] } : {}
     if (mit.length + eingabe.length + getippt.length === 0) return next({ ...e, ...kontext })
 
     zeitgeber?.cancel()
@@ -1405,7 +1413,7 @@ export const register: Register = (on, options) => {
       r.doppelt > 0 ? `${r.doppelt} schon vorhanden (gleicher Titel offen oder kürzlich geschlossen)` : '',
       r.geaendert > 0 ? `geändert: ${r.geaendert}` : '',
       r.zu.length > 0 ? `geschlossen: ${r.zu.map(p => `#${p.nr ?? '?'}`).join(', ')}` : '',
-      r.nichtOffen > 0 ? `${r.nichtOffen} Nummer(n) nicht offen` : '',
+      r.ohneTreffer.length > 0 ? `nicht geschlossen: ${r.ohneTreffer.join(', ')} (Nummern nur aus „Offene Punkte“ oder diesem Ergebnis, nie raten)` : '',
     ].filter(t => t !== '')
     return { result: `Offene Punkte: ${teile.join('; ') || 'nichts geändert'}. Der Nutzer bekommt neue Punkte über der Eingabe als Auswahl gestellt.` }
   }).catch(() => ({ deny: 'offene-punkte: Eintrag fehlgeschlagen, bitte noch einmal.' }))
@@ -1418,8 +1426,18 @@ export const register: Register = (on, options) => {
       $.clock.after(0, () => {
         void (async () => {
           const jetzt = await $.clock.now()
-          const zu = await aendere($, l => perMarkeSchliessen(l, marken, jetzt))
+          let vorher: Punkt[] = []
+          const zu = await aendere($, l => {
+            vorher = l
+            return perMarkeSchliessen(l, marken, jetzt, sitzung)
+          })
           if (zu.length > 0) $.ui.toast(zu.map(p => `🤖 „${p.titel}“ ${p.ergebnis?.includes('überholt') ? 'überholt' : 'erledigt'}`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
+          // Eine geratene oder fremde Nummer nicht still verpuffen lassen: der Nutzer sieht es, Claude erfaehrt es mit der naechsten Nachricht.
+          const fehl = markenOhneTreffer(vorher, marken, sitzung, eingangZeit)
+          if (fehl.length > 0) {
+            $.ui.toast(`Marke ohne Treffer: ${fehl.join(' · ')}`, { timeoutMs: 8000 })
+            hinweiseFuerClaude.push(markenHinweis(fehl, await read($, punkteA), sitzung))
+          }
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }

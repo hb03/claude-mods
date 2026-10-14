@@ -12,7 +12,7 @@ export const ANGEBOT_VERFALL = 4
  * Rückfall, wenn die eigene plugin.json nicht lesbar ist; sonst gilt, was beim Start aus ihr gelesen
  * wurde (laufendeVersionSetzen). Steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt.
  */
-export const VERSION = '0.16.6'
+export const VERSION = '0.16.7'
 let laufend = VERSION
 /** Die Fassung, die gerade läuft: aus der plugin.json im geladenen Ordner, sonst VERSION. */
 export const laufendeVersion = (): string => laufend
@@ -247,7 +247,7 @@ export const ERKANNT = 'laut Gespräch erledigt'
 export const AUTO_ZEIGEN_MS = 24 * 3600 * 1000
 
 /** Hinweis an Claude (einmal je Unterhaltung, prompt.context): so schließt er Punkte selbst. */
-export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern; die aktuelle Liste kommt als Kontext „Offene Punkte“ mit seinen Nachrichten, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt dort durch deine Arbeit oder das Gespräch erledigt oder entschieden, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“); ist er hinfällig (anderer Weg, Angebot nicht aufgegriffen, betrifft nichts mehr), „überholt: #<Nr> – kurzer Grund“. Der Punkt schließt sich dann sofort und lässt sich per /offen wieder öffnen. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
+export const HINWEIS_CLAUDE = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern; die aktuelle Liste kommt als Kontext „Offene Punkte“ mit seinen Nachrichten, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt dort durch deine Arbeit oder das Gespräch erledigt oder entschieden, schreib in deine Antwort eine Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“); ist er hinfällig (anderer Weg, Angebot nicht aufgegriffen, betrifft nichts mehr), „überholt: #<Nr> – kurzer Grund“. Nummern nur aus „Offene Punkte“ übernehmen, nie raten oder hochzählen; ohne Nummer „erledigt: Titel“. Der Punkt schließt sich dann sofort und lässt sich per /offen wieder öffnen. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
 /**
  * Hinweis bei Eintrag „block“ (Standard): Claude schreibt offene Punkte als Block ans Ende seiner Antwort.
@@ -263,10 +263,10 @@ b) Alternative - endet das Label mit ":", ergänzt der Nutzer noch Text
 info: warum offen, ein Satz (kann entfallen)
 anleitung: nur bei Aufgaben - Schritte mit allen Befehlen, Pfaden und Werten wörtlich, Befehle als eigene Zeilen mit "$ " davor
 \`\`\`
-Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Seine Antwort („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit „# #<Nr> Titel“ wieder. Handlungen des Nutzers als Absicht („Ich kläre das“), nie als Ergebnis. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
+Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert; die Nummer eines neuen Punkts meldet das Plugin im nächsten Turn. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Nummern nur von dort übernehmen, nie raten oder hochzählen; ohne Nummer „erledigt: Titel“. Seine Antwort („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit „# #<Nr> Titel“ wieder. Handlungen des Nutzers als Absicht („Ich kläre das“), nie als Ergebnis. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
 
 /** Hinweis bei Auswertung „claude“: Claude legt Punkte selbst an, statt dass Haiku jede Antwort liest. */
-export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Eine Antwort des Nutzers („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit dem Werkzeug (Feld "aktualisieren" mit nr) wieder. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
+export const HINWEIS_WERKZEUG = 'Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten NICHT mit: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung, Freigabe, Zugangsdaten, Prüfung von Hand, Angebot für einen nächsten Schritt), trag es selbst mit dem Werkzeug mcp__offene-punkte__punkte ein (Feld "neu"), in derselben Antwort. Die aktuelle Liste kommt als Kontext „Offene Punkte“ mit den Nachrichten des Nutzers, sobald sie sich ändert. Der Nutzer will nichts wegklicken, das sich schon erledigt hat: Ist ein Punkt erledigt, entschieden oder hinfällig, schließ ihn mit dem Werkzeug (Feld "schliessen") oder mit einer Zeile „erledigt: #<Nr>“ bzw. „überholt: #<Nr> – kurzer Grund“ in deiner Antwort. Nummern nur aus „Offene Punkte“ oder der Rückmeldung des Werkzeugs übernehmen, nie raten oder hochzählen; ohne Nummer „erledigt: Titel“. Eine Antwort des Nutzers („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit dem Werkzeug (Feld "aktualisieren" mit nr) wieder. Nennst du Seiten einer Webseite des Projekts, schreib die volle Adresse (https://beispiel.de/admin/vorschlaege statt /admin/vorschlaege) - dann ist sie ein Link.'
 
 /**
  * Die offenen Punkte als Kontext für Claude: kurz, mit Nummer, damit er Erledigtes und
@@ -320,8 +320,8 @@ export function schlussMarken(antwort: string): Marke[] {
 /** „erledigt: #3, #5“ in einer Antwort von Claude: die Nummern (auch „überholt:“). */
 export const erledigtMarken = (antwort: string): number[] => schlussMarken(antwort).filter(m => m.nr >= 0).map(m => m.nr)
 
-/** Schließt offene Punkte, die eine Marke nennt - per Nummer oder per Titel (gleich, oder einer enthält den anderen). */
-export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (number | Marke)[], jetzt: number): Punkt[] {
+/** Welche Marke einen Punkt nennt - per Nummer oder per Titel (gleich, oder einer enthält den anderen). */
+function markeFuer(marken: readonly (number | Marke)[]): (p: Punkt) => Marke | undefined {
   const n = new Map<number, Marke>()
   const titel: Marke[] = []
   for (const m of marken) {
@@ -329,7 +329,7 @@ export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (nu
     else if (m.titel !== undefined) titel.push(m)
     else n.set(m.nr, m)
   }
-  const passt = (p: Punkt): Marke | undefined => {
+  return p => {
     const perNr = p.nr !== undefined ? n.get(p.nr) : undefined
     if (perNr !== undefined) return perNr
     const s = schluessel(p.titel)
@@ -338,20 +338,62 @@ export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (nu
       return t === s || (t.length >= 8 && s.length >= 8 && (s.includes(t) || t.includes(s)))
     })
   }
+}
+
+/** Was eine Marke schließen darf: offen und nicht unterwegs, oder beantwortet und bei Claude - nie den Punkt einer anderen Sitzung. */
+const schliessbar = (p: Punkt, sitzung: string): boolean =>
+  !fremd(p, sitzung) && ((p.status === 'offen' && p.ausstehend === undefined) || (p.status === 'erledigt' && p.beiClaude !== undefined))
+
+/**
+ * Schließt offene Punkte, die eine Marke nennt - per Nummer oder per Titel. Punkte einer anderen
+ * Sitzung (mit sitzung) bleiben: deren Nummern kennt Claude nicht, eine solche Marke ist geraten.
+ */
+export function perMarkeSchliessen(liste: readonly Punkt[], marken: readonly (number | Marke)[], jetzt: number, sitzung = ''): Punkt[] {
+  const passt = markeFuer(marken)
   return liste.map(p => {
+    if (!schliessbar(p, sitzung)) return p
+    const m = passt(p)
+    if (m === undefined) return p
     // Beantwortet und bei Claude: die Marke sagt, dass er es umgesetzt hat.
-    if (p.status === 'erledigt' && p.beiClaude !== undefined) {
-      const m = passt(p)
-      if (m === undefined) return p
+    if (p.status === 'erledigt') {
       const { beiClaude: _b, ...rest } = p
       return { ...rest, ergebnis: `${p.ergebnis ?? 'beantwortet'} · von Claude als ${m.ueberholt ? 'überholt' : 'umgesetzt'} gemeldet${m.grund !== '' ? ` – ${m.grund}` : ''}`, geaendert: jetzt }
     }
-    if (p.status !== 'offen' || p.ausstehend !== undefined) return p
-    const m = passt(p)
-    if (m === undefined) return p
     const grund = `von Claude als ${m.ueberholt ? 'überholt' : 'erledigt'} gemeldet${m.grund !== '' ? ` – ${m.grund}` : ''}`
     return { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
   })
+}
+
+/**
+ * Marken, die nichts geschlossen haben, als Rückmeldung an Claude: eine geratene Nummer soll nicht
+ * still verpuffen (oder einen fremden Punkt treffen). liste ist der Stand VOR dem Schließen.
+ * Leer, wenn jede Marke getroffen hat. Als getroffen zählt auch ein eigener Punkt, dessen Antwort gerade
+ * unterwegs ist oder der seit `seit` (der letzten Nachricht) geschlossen wurde - der Nutzer war schneller.
+ */
+export function markenOhneTreffer(liste: readonly Punkt[], marken: readonly Marke[], sitzung = '', seit = Infinity): string[] {
+  const aus: string[] = []
+  for (const m of marken) {
+    const passt = markeFuer([m])
+    const genannt = liste.filter(p => passt(p) !== undefined)
+    if (genannt.some(p => schliessbar(p, sitzung) || (!fremd(p, sitzung) && (p.ausstehend !== undefined || (p.geaendert ?? 0) >= seit)))) continue
+    if (m.titel !== undefined) {
+      aus.push(`„${m.titel}“ passt zu keinem offenen Punkt`)
+      continue
+    }
+    const p = genannt[0]
+    if (p === undefined) aus.push(`#${m.nr} gibt es nicht`)
+    else if (fremd(p, sitzung)) aus.push(`#${m.nr} gehört einer anderen Sitzung`)
+    else aus.push(`#${m.nr} „${p.titel}“ war schon geschlossen`)
+  }
+  return aus
+}
+
+/** Die Rückmeldung zu markenOhneTreffer: was nicht ankam und welche Nummern Claude wirklich nutzen kann. */
+export function markenHinweis(probleme: readonly string[], liste: readonly Punkt[], sitzung = ''): string {
+  if (probleme.length === 0) return ''
+  const eigene = offene(liste).filter(p => !fremd(p, sitzung) && p.nr !== undefined).slice(0, 10)
+  const offen = eigene.length > 0 ? `Offen sind ${eigene.map(p => `#${p.nr} „${p.titel}“`).join(', ')}.` : 'Offen ist kein Punkt dieser Sitzung.'
+  return `offene-punkte: Deine Marke hat nichts geschlossen – ${probleme.join('; ')}. ${offen} Nummern nur aus „Offene Punkte“ oder einer Rückmeldung von offene-punkte übernehmen, nie raten; sonst „erledigt: Titel“.`
 }
 
 /**
