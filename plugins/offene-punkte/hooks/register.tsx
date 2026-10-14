@@ -896,7 +896,7 @@ async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfe
 
 function auswahl(punkt: Punkt) {
   return [
-    ...punkt.optionen.map((o, i) => ({ value: String(i), label: o.label })),
+    ...punkt.optionen.map((o, i) => ({ value: String(i), label: `${String.fromCharCode(97 + i)}) ${o.label}` })),
     { value: EIGENE, label: 'Eigene Antwort …' },
     ...befehle(punkt.anleitung).map((b, i) => ({ value: `${BEFEHL}${i}`, label: befehlLabel(b) })),
     { value: ERKLAEREN, label: 'Erklären' },
@@ -982,6 +982,13 @@ const kopf = (p: Punkt) =>
     : p.stufe === 'angebot'
       ? { zeichen: '◇ Angebot', farbe: 'gray' }
       : { zeichen: p.art === 'aufgabe' ? '◆ Zu tun' : '◆ Offen', farbe: 'yellow' }
+
+/** Die Befehle, mit denen sich der Punkt ohne Auswahl beantworten laesst - unter der Frage ueber der Eingabe. */
+const kurzbefehle = (p: Punkt) => {
+  const n = `/offen ${p.nr}`
+  const buchstaben = p.optionen.slice(0, 4).map((_, i) => String.fromCharCode(97 + i)).join('|')
+  return [...(buchstaben !== '' ? [`${n} ${buchstaben}`] : []), `${n} <Antwort>`, `${n} erledigt|weg|später`].join(' · ')
+}
 
 const optionenText = (p: Punkt) =>
   p.optionen.map((o, i) => `${String.fromCharCode(97 + i)}) ${o.label}`).join(' · ')
@@ -1167,7 +1174,7 @@ export const register: Register = (on, options) => {
     turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 antwort <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
     })
     await $.command.register({
       name: 'zusammenfassung',
@@ -1526,12 +1533,13 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" borderStyle="round" borderColor={k.farbe} paddingX={1}>
         {warnZeilen}
         <Text>
-          <Text color={k.farbe} bold>{k.zeichen}</Text>
+          <Text color={k.farbe} bold>{k.zeichen}{punkt.nr !== undefined ? ` #${punkt.nr}` : ''}</Text>
           <Text dimColor>{liste.length > 1 ? ` (1 von ${liste.length})` : ''}{istVeraltet(punkt) ? ' – noch aktuell?' : ''}: </Text>
           <Text bold>{punkt.titel}</Text>
         </Text>
         <Text wrap="wrap">{punkt.frage}</Text>
         {(punkt.anleitung ?? '') !== '' && <Markdown key={`anleitung-${punkt.id}`} text={punkt.anleitung} />}
+        {punkt.nr !== undefined && <Text dimColor wrap="wrap">{kurzbefehle(punkt)}</Text>}
         {wartend > 0 && (
           <Box key="wartend" flexDirection="row">
             <Text color="cyan">{wartend === 1 ? '1 Antwort wartet' : `${wartend} Antworten warten`} auf die übrigen Fragen (höchstens 30 s) </Text>

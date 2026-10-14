@@ -120,6 +120,16 @@ describe('kommando: antwort, alle, klären', () => {
     expect(kommando('3 antwort Zeile eins\nZeile zwei')).toEqual({ art: 'punkt', nummer: 3, tun: 'antwort', text: 'Zeile eins\nZeile zwei' })
   })
 
+  test('„<Nr> <Text>“ ohne das Wort antwort ist auch eine freie Antwort', () => {
+    expect(kommando('2 bitte erst morgen machen')).toEqual({ art: 'punkt', nummer: 2, tun: 'antwort', text: 'bitte erst morgen machen' })
+    expect(kommando('2 Ja')).toEqual({ art: 'punkt', nummer: 2, tun: 'antwort', text: 'Ja' })
+    expect(kommando('2 b, aber ohne Neustart')).toEqual({ art: 'punkt', nummer: 2, tun: 'antwort', text: 'b, aber ohne Neustart' })
+    // Befehle bleiben Befehle, ein Befehlswort mit Rest bleibt ein Fehler
+    expect(kommando('2 erledigt')).toEqual({ art: 'punkt', nummer: 2, tun: 'erledigt' })
+    expect(kommando('2 b')).toEqual({ art: 'punkt', nummer: 2, tun: 'option', option: 1 })
+    expect(kommando('2 weg damit').art).toBe('fehler')
+  })
+
   test('„<Nr> antwort“ ohne Text ist ein Fehler mit Hinweis', () => {
     const k = kommando('3 antwort')
     expect(k.art).toBe('fehler')

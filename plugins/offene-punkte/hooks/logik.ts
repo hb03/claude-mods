@@ -766,7 +766,7 @@ export type Kommando =
 
 const ZEITWORT: Record<string, Ruhezeit> = { sitzung: 'sitzung', morgen: 'morgen', drei: 'drei', woche: 'woche' }
 
-/** Liest die Argumente von /offen: "", "leeren", "neu Text", "2 erledigt", "3 weg", "1 später", "1 später morgen", "2 a", "2 antwort Text", "alle weg Grund". */
+/** Liest die Argumente von /offen: "", "leeren", "neu Text", "2 erledigt", "3 weg", "1 später", "1 später morgen", "2 a", "2 antwort Text", "2 Text", "alle weg Grund". */
 export function kommando(args: string): Kommando {
   const neu = /^neu(?:\s+([\s\S]*))?$/i.exec(args.trim())
   if (neu !== null) {
@@ -804,24 +804,31 @@ export function kommando(args: string): Kommando {
   if (a === 'leeren') return { art: 'leeren' }
   if (a === 'senden') return { art: 'senden' }
   const m = /^(\d+)\s+(\S+)(?:\s+(\S+))?$/.exec(a)
-  if (m === null) return { art: 'fehler', text: HILFE }
-  const nummer = Number(m[1])
-  const wort = m[2] ?? ''
-  if (m[3] !== undefined) {
-    const bis = ZEITWORT[m[3]]
-    if ((wort !== 'später' && wort !== 'spaeter') || bis === undefined) return { art: 'fehler', text: HILFE }
-    return { art: 'punkt', nummer, tun: 'spaeter', bis }
+  if (m !== null) {
+    const nummer = Number(m[1])
+    const wort = m[2] ?? ''
+    if (m[3] !== undefined && (wort === 'später' || wort === 'spaeter')) {
+      const bis = ZEITWORT[m[3]]
+      return bis === undefined ? { art: 'fehler', text: HILFE } : { art: 'punkt', nummer, tun: 'spaeter', bis }
+    }
+    if (m[3] === undefined) {
+      if (/^[a-d]$/.test(wort)) return { art: 'punkt', nummer, tun: 'option', option: wort.charCodeAt(0) - 97 }
+      if (wort === 'erledigt' || wort === 'fertig') return { art: 'punkt', nummer, tun: 'erledigt' }
+      if (wort === 'weg' || wort === 'verwerfen') return { art: 'punkt', nummer, tun: 'weg' }
+      if (wort === 'später' || wort === 'spaeter') return { art: 'punkt', nummer, tun: 'spaeter' }
+      if (wort === 'aktuell') return { art: 'punkt', nummer, tun: 'aktuell' }
+    }
   }
-  if (/^[a-d]$/.test(wort)) return { art: 'punkt', nummer, tun: 'option', option: wort.charCodeAt(0) - 97 }
-  if (wort === 'erledigt' || wort === 'fertig') return { art: 'punkt', nummer, tun: 'erledigt' }
-  if (wort === 'weg' || wort === 'verwerfen') return { art: 'punkt', nummer, tun: 'weg' }
-  if (wort === 'später' || wort === 'spaeter') return { art: 'punkt', nummer, tun: 'spaeter' }
-  if (wort === 'aktuell') return { art: 'punkt', nummer, tun: 'aktuell' }
-
+  // Alles andere nach der Nummer ist eine freie Antwort: "/offen 2 bitte erst morgen" wie "/offen 2 antwort …".
+  // Beginnt es mit einem Befehlswort ("2 erledigt morgen"), ist es eher ein Vertipper als eine Antwort.
+  const frei = /^(\d+)\s+([\s\S]+)$/.exec(args.trim())
+  if (frei !== null && !BEFEHLSWORT.test(frei[2] ?? '')) return { art: 'punkt', nummer: Number(frei[1]), tun: 'antwort', text: (frei[2] ?? '').trim() }
   return { art: 'fehler', text: HILFE }
 }
 
-const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären · /offen überblick · /offen neu <Text> · /offen gedanke <Text> · /offen gedanken [prüfen] · /offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
+const BEFEHLSWORT = /^(erledigt|fertig|weg|verwerfen|später|spaeter|aktuell)(\s|$)/i
+
+const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> <Text> oder /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären · /offen überblick · /offen neu <Text> · /offen gedanke <Text> · /offen gedanken [prüfen] · /offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen senden (gesammelte Antworten jetzt) · /offen leeren'
 
 /**
  * Die Bitte, die /offen klären an Claude schickt. Beginnt mit „Automatische Klärung“, damit der
