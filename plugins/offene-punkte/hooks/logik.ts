@@ -12,7 +12,7 @@ export const ANGEBOT_VERFALL = 4
  * Rückfall, wenn die eigene plugin.json nicht lesbar ist; sonst gilt, was beim Start aus ihr gelesen
  * wurde (laufendeVersionSetzen). Steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt.
  */
-export const VERSION = '0.16.7'
+export const VERSION = '0.16.8'
 let laufend = VERSION
 /** Die Fassung, die gerade läuft: aus der plugin.json im geladenen Ordner, sonst VERSION. */
 export const laufendeVersion = (): string => laufend
@@ -446,6 +446,11 @@ export function zusammenfuehren(punkte: readonly Punkt[], a: Auswertung, jetzt: 
                auto: { grund: grund || ERKANNT, zeit: jetzt }, geaendert: jetzt }
     }
     const { id: _id, ...felder } = aenderungen.get(p.id) ?? { id: '' }
+    // Claude ändert einen Punkt aus dem Planungsinterview: das Interview ist durch, der Rest wird wieder gefragt.
+    if (p.ruht?.interview === true && aenderungen.has(p.id)) {
+      const { ruht: _r, ...rest } = p
+      return { ...rest, ...felder, ohneBezug: 0 }
+    }
     return { ...p, ...felder, ohneBezug: bezug.has(p.id) ? 0 : (p.ohneBezug ?? 0) + 1 }
   })
   // Nicht neu anlegen, was offen ist oder vor kurzem geschlossen wurde („das ist doch ein alter Punkt“).
@@ -966,8 +971,27 @@ export function klaerungsBitte(punkte: readonly Punkt[]): string {
 export function bitteZu(art: 'erklaeren' | 'interview' | 'klaeren', p: Punkt): string {
   const nr = p.nr !== undefined ? `#${p.nr} ` : ''
   if (art === 'erklaeren') return `Erkläre mir den offenen Punkt ${nr}„${p.titel}“ genauer: worum geht es, welche Möglichkeiten gibt es, was empfiehlst du und warum?`
-  if (art === 'interview') return `Lass uns den offenen Punkt ${nr}„${p.titel}“ im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab.`
+  if (art === 'interview') {
+    const ref = nr.trim() || p.titel
+    return `Lass uns den offenen Punkt ${nr}„${p.titel}“ im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab. Am Ende: ist alles entschieden, schreib „erledigt: ${ref}“; bleibt etwas offen, ändere den Punkt mit „# ${nr.trim() || '#<Nr>'} ${p.titel}“ im Block, und was neu offen ist, leg als eigenen Punkt an.`
+  }
   return `Kläre den offenen Punkt ${nr}„${p.titel}“ bitte selbst (Code, Logs, Dateien, Commits) und sag mir das Ergebnis; ist er damit erledigt, schreib „erledigt: ${nr.trim() || p.titel}“.`
+}
+
+/** Die Nummer aus einer abgeschickten Interview-Bitte (bitteZu 'interview'), sonst undefined. */
+export function interviewNummer(text: string): number | undefined {
+  const m = /Lass uns den offenen Punkt #(\d+) „[^“]*“ im Planungsinterview durchgehen/.exec(text)
+  return m !== null ? Number(m[1]) : undefined
+}
+
+/**
+ * Der Punkt geht ins Planungsinterview: er ruht, damit er nicht nebenher über der Eingabe gefragt wird.
+ * Er wacht auf, wenn Claude ihn ändert („# #N“), schließt ihn ohnehin per Marke - spätestens in der nächsten Sitzung.
+ */
+export function insInterview(liste: readonly Punkt[], nr: number, sitzung: string): Punkt[] {
+  return liste.map(p => p.nr === nr && p.status === 'offen' && p.ausstehend === undefined && !fremd(p, sitzung)
+    ? { ...p, ruht: { sitzung, interview: true as const } }
+    : p)
 }
 
 /** Ein Punkt, den der Nutzer selbst notiert (/offen neu): Titel aus den ersten Wörtern, ohne feste Antworten. */
@@ -1063,6 +1087,7 @@ export function ruheEnde(punkte: readonly Punkt[], s: Sicht): string {
 /** "ruht bis …" – ohne bekannte Sitzung (in der Datei) auch der Vermerk für die nächste Sitzung. */
 export function ruheVermerk(p: Punkt, s: Sicht): string {
   if (p.ruht === undefined) return ''
+  if (p.ruht.interview === true) return s.sitzung === '' || p.ruht.sitzung === s.sitzung ? 'im Planungsinterview' : ''
   if (p.ruht.bis !== undefined) return p.ruht.bis > s.jetzt ? `ruht bis ${tagText(p.ruht.bis)}` : ''
   return s.sitzung === '' || p.ruht.sitzung === s.sitzung ? 'ruht bis zur nächsten Sitzung' : ''
 }
@@ -1291,7 +1316,7 @@ function ruheLesen(x: unknown): { ruht: Ruhe } | undefined {
   if (typeof x !== 'object' || x === null) return undefined
   const r = x as Record<string, unknown>
   if (typeof r.bis === 'number') return { ruht: { bis: r.bis } }
-  if (typeof r.sitzung === 'string') return { ruht: { sitzung: r.sitzung } }
+  if (typeof r.sitzung === 'string') return { ruht: { sitzung: r.sitzung, ...(r.interview === true ? { interview: true as const } : {}) } }
   return undefined
 }
 

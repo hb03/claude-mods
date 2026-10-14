@@ -97,7 +97,8 @@ export type Punkt = {
   auto?: { grund: string; zeit: number }
 }
 
-export type Ruhe = { bis?: number; sitzung?: string }
+/** interview: ruht, weil der Punkt gerade im Planungsinterview ist (bis Claude ihn schließt oder ändert). */
+export type Ruhe = { bis?: number; sitzung?: string; interview?: true }
 
 /** Eine Warnung, die kontext-anzeige in seinem State führt. */
 export type Warnung = { schluessel: string; stufe: 'info' | 'warn'; text: string }

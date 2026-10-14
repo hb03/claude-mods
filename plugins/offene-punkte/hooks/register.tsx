@@ -13,7 +13,7 @@ import {
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
   ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
   EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
-  HINWEIS_BLOCK, aenderungenZuIds, abgelehnteAenderungen, beiClaudeFertig, blockLesen,
+  HINWEIS_BLOCK, aenderungenZuIds, abgelehnteAenderungen, beiClaudeFertig, blockLesen, insInterview, interviewNummer,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
   installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, neuerAlsLaufend,
 } from './logik'
@@ -1342,6 +1342,11 @@ export const register: Register = (on, options) => {
     // Selbst geschriebene Antworten („Zum offenen Punkt „Titel“: …“, auch von claude-web per tmux):
     // die Punkte schliessen sich mit dieser Nachricht, ohne zweiten Befehl.
     const getippt = eingetippteAntworten(e.text, punkte)
+    // Die Bitte aus dem Knopf Planungsinterview ist abgeschickt: der Punkt ruht, solange das Interview laeuft.
+    const interview = interviewNummer(e.text)
+    if (interview !== undefined) {
+      $.clock.after(0, () => void aendere($, l => insInterview(l, interview, sitzung)).catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`)))
+    }
     // Gesammelte Antworten gehen mit dieser Nachricht, vor ihr - so kennt Claude sie zuerst.
     const text = mit.length > 0 ? `${sammelText(teileVon(mit))}\n\n${e.text}` : e.text
     letzteEingabe = text

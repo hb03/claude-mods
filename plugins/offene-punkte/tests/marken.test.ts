@@ -2,7 +2,10 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Punkt } from '../types'
-import { HINWEIS_BLOCK, HINWEIS_CLAUDE, HINWEIS_WERKZEUG, markenHinweis, markenOhneTreffer, perMarkeSchliessen, schlussMarken } from '../hooks/logik'
+import {
+  HINWEIS_BLOCK, HINWEIS_CLAUDE, HINWEIS_WERKZEUG, ablageLesen, ablageText, bitteZu, fragbar, insInterview, interviewNummer, markenHinweis, markenOhneTreffer,
+  perMarkeSchliessen, ruheVermerk, schlussMarken, zusammenfuehren,
+} from '../hooks/logik'
 
 const punkt = (nr: number, extra: Partial<Punkt> = {}): Punkt => ({
   id: `p${nr}`, nr, titel: `Punkt ${nr}`, frage: `Frage ${nr}?`, info: '', art: 'entscheidung', anleitung: '',
@@ -134,4 +137,58 @@ test('Block → Nummer kommt mit der nächsten Nachricht (auch von einem Peer); 
   await $.prompt.submit({ text: 'danke', origin: { kind: 'composer' } } as never)
   await uhr.settle()
   expect(kontexte.at(-1)).not.toContain('nichts geschlossen')
+})
+
+describe('Planungsinterview (0.16.8)', () => {
+  const S = { sitzung: HIER, jetzt: JETZT }
+
+  test('die Bitte nennt Nummer und Abschluss, interviewNummer liest sie zurück', () => {
+    const b = bitteZu('interview', punkt(12, { titel: 'Upload umbauen' }))
+    expect(b).toContain('erledigt: #12')
+    expect(b).toContain('# #12 Upload umbauen')
+    expect(interviewNummer(b)).toBe(12)
+    expect(interviewNummer('Lass uns das erst im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab.')).toBeUndefined()
+  })
+
+  test('im Interview ruht der Punkt, nur der eigene und nur offene', () => {
+    const l = [punkt(12, { sitzung: HIER }), punkt(13, { sitzung: 'sitzung-b' }), punkt(14, { sitzung: HIER, status: 'erledigt' })]
+    const r = insInterview(insInterview(insInterview(l, 12, HIER), 13, HIER), 14, HIER)
+    expect(r[0]?.ruht).toEqual({ sitzung: HIER, interview: true })
+    expect(r[1]?.ruht).toBeUndefined()
+    expect(r[2]?.ruht).toBeUndefined()
+    expect(fragbar(r, S).map(p => p.nr)).toEqual([])
+    expect(ruheVermerk(r[0]!, S)).toBe('im Planungsinterview')
+  })
+
+  test('Claude ändert ihn („# #12“): er wird wieder gefragt; ein Schließen per Marke geht trotz Ruhe', () => {
+    const l = insInterview([punkt(12, { sitzung: HIER })], 12, HIER)
+    const geaendert = zusammenfuehren(l, { neu: [], aktualisiert: [{ id: 'p12', frage: 'Nur noch das Limit?' } as never], erledigt: [], erwaehnt: [], ueberblick: '' }, JETZT, () => 'n')
+    expect(geaendert[0]?.ruht).toBeUndefined()
+    expect(geaendert[0]?.frage).toBe('Nur noch das Limit?')
+    expect(fragbar(geaendert, S).map(p => p.nr)).toEqual([12])
+    expect(perMarkeSchliessen(l, schlussMarken('erledigt: #12'), JETZT, HIER)[0]?.status).toBe('erledigt')
+  })
+
+  test('übersteht die Datei', () => {
+    const l = insInterview([punkt(12, { sitzung: HIER })], 12, HIER)
+    expect(ablageLesen(ablageText({ punkte: l, ueberblick: '' }, JETZT))?.punkte[0]?.ruht).toEqual({ sitzung: HIER, interview: true })
+  })
+})
+
+test('Interview-Bitte abgeschickt: der Punkt ruht in /offen, eine Änderung von Claude weckt ihn', async ($, on) => {
+  const uhr = mock.clock(on, { now: JETZT })
+  grundlage(on, [])
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+  const offen = async (args: string) => String(((await $.command.run({ command: 'offen', args } as never)) as { text?: string }).text)
+
+  await $.turn.complete(fertig('```offen\n# Upload umbauen | entscheidung\nWie soll der Upload laufen?\na) In Teilen\n```', 't1'))
+  await uhr.settle()
+  await $.prompt.submit({ text: 'Lass uns den offenen Punkt #1 „Upload umbauen“ im Planungsinterview durchgehen: frag mich die offenen Details einzeln ab.', origin: { kind: 'composer' } } as never)
+  await uhr.settle()
+  expect(await offen('')).toContain('im Planungsinterview')
+
+  await $.turn.complete(fertig('```offen\n# #1 Upload umbauen\nNur noch: welches Limit?\n```', 't2'))
+  await uhr.settle()
+  expect(await offen('')).not.toContain('im Planungsinterview')
+  expect(await offen('')).toContain('welches Limit')
 })
