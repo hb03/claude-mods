@@ -826,6 +826,13 @@ export function kommando(args: string): Kommando {
   return { art: 'fehler', text: HILFE }
 }
 
+/** Die Nummern hinter /erledigt und /weg: "1", "1 3", "#1, #3". Sonst null. */
+export function kurzNummern(args: string): number[] | null {
+  const t = args.trim()
+  if (!/^#?\d+(?:[\s,]+#?\d+)*$/.test(t)) return null
+  return [...new Set(t.split(/[\s,]+/).map(x => Number(x.replace('#', ''))))]
+}
+
 const BEFEHLSWORT = /^(erledigt|fertig|weg|verwerfen|später|spaeter|aktuell)(\s|$)/i
 
 const HILFE = 'Verwendung: /offen · /offen <Nr> erledigt|weg|später|aktuell · /offen <Nr> später sitzung|morgen|drei|woche · /offen <Nr> a|b|c|d (Antwort wählen, bei Mehrfachauswahl auch "a c") · /offen <Nr> <Text> oder /offen <Nr> antwort <Text> (freie Antwort, geht sofort) · /offen alle weg|erledigt [Grund] · /offen klären · /offen überblick · /offen neu <Text> · /offen gedanke <Text> · /offen gedanken [prüfen] · /offen gedanke <Nr> senden|interview|punkt|erledigt|weg · /offen senden (gesammelte Antworten jetzt) · /offen leeren'

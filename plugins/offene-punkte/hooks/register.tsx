@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Ausstehend, Option, Punkt, Warnung } from '../types'
 import {
-  AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage,
+  AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage, kurzNummern,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
@@ -987,7 +987,7 @@ const kopf = (p: Punkt) =>
 const kurzbefehle = (p: Punkt) => {
   const n = `/offen ${p.nr}`
   const buchstaben = p.optionen.slice(0, 4).map((_, i) => String.fromCharCode(97 + i)).join('|')
-  return [...(buchstaben !== '' ? [`${n} ${buchstaben}`] : []), `${n} <Antwort>`, `${n} erledigt|weg|später`].join(' · ')
+  return [...(buchstaben !== '' ? [`${n} ${buchstaben}`] : []), `${n} <Antwort>`, `/erledigt ${p.nr}`, `/weg ${p.nr}`, `${n} später`].join(' · ')
 }
 
 const optionenText = (p: Punkt) =>
@@ -1176,6 +1176,8 @@ export const register: Register = (on, options) => {
       name: 'offen',
       description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
     })
+    await $.command.register({ name: 'erledigt', description: 'Kurzform: /erledigt 2 (oder 2 3) schließt offene Punkte wie /offen 2 erledigt' })
+    await $.command.register({ name: 'weg', description: 'Kurzform: /weg 2 (oder 2 3) verwirft offene Punkte wie /offen 2 weg' })
     await $.command.register({
       name: 'zusammenfassung',
       description: 'Fasst die ganze Sitzung zusammen: Ziel, Erledigtes, was du noch tun musst (mit Befehlen), offene Entscheidungen',
@@ -1467,6 +1469,17 @@ export const register: Register = (on, options) => {
       text: kopfzeile + aktivText + ruhendText + autoText + gedankenAbschnitt + `\n\n/offen <Nr> a|b|c|d wählt eine Antwort · /offen <Nr> antwort <Text> · /offen <Nr> erledigt|weg|später [sitzung|morgen|drei|woche] · /offen alle weg|erledigt · /offen klären · /offen neu <Text> · /offen gedanke <Text>${fuss}`,
     }
   })
+
+  // Kurzformen: /erledigt 2 3 und /weg 2 - je Nummer wie /offen <Nr> erledigt|weg.
+  for (const tun of ['erledigt', 'weg'] as const) {
+    on('command.run', { command: tun }, async ($, e) => {
+      const nummern = kurzNummern(e.args)
+      if (nummern === null) return { text: `Verwendung: /${tun} <Nr> [<Nr> …] – die Nummern zeigt /offen.` }
+      const antworten: string[] = []
+      for (const n of nummern) antworten.push((await offenKommando($, `${n} ${tun}`)) ?? '')
+      return { text: antworten.filter(t => t !== '').join('\n') }
+    })
+  }
 
   // Die ganze Sitzung zusammenfassen: ein Fork des Hauptmodells ueber den eigenen Verlauf (aus dem
   // Prompt-Cache), ohne Werkzeuge. Der Ueberblick kommt daneben von Haiku aus den Texten des Verlaufs -

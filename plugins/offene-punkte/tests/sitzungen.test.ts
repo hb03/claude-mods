@@ -4,7 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Punkt, Warnung } from '../types'
 import {
   hoechsteImVerlauf, kommando, notiz, nummerieren, verlaufsEintraege, zusammenfuehren,
-  abgleichen, ablageLesen, ablageText, alteVerlaeufe, fragbar, monatsKopf, ruhe, statuszeile, stempeln, tagText, tagAnhaengen, uebernehmen, zuZeigen,
+  abgleichen, ablageLesen, ablageText, alteVerlaeufe, fragbar, monatsKopf, ruhe, statuszeile, stempeln, tagText, tagAnhaengen, uebernehmen, zuZeigen, kurzNummern,
 } from '../hooks/logik'
 
 const punkt = (id: string, extra: Partial<Punkt> = {}): Punkt => ({
@@ -354,6 +354,25 @@ test('/offen neu legt einen Punkt mit der nächsten Nummer an, /offen <Nr> spät
   await uhr.settle()
   expect(dateien.get('/projekt/offene-punkte/antworten-2026-10-11.md')).toContain('· #7 Gedanken-Knopf neben Senden bauen – entschieden')
   expect(await lauf('neu Noch einer')).toBe('Punkt 8 angelegt: „Noch einer“')
+})
+
+test('Kurzformen /erledigt und /weg schließen einen oder mehrere Punkte', async ($, on) => {
+  const uhr = mock.clock(on, { now: SONNTAG })
+  const dateien = new Map([[OFFEN, ablageText({
+    punkte: [punkt('a', { nr: 1, titel: 'Eins' }), punkt('b', { nr: 2, titel: 'Zwei' }), punkt('c', { nr: 3, titel: 'Drei' })],
+    ueberblick: '',
+  }, 1)]])
+  grundlage(on, dateien)
+  await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+  await uhr.settle()
+
+  const lauf = async (command: string, args: string) => String(((await $.command.run({ command, args } as never)) as { text?: string }).text)
+  expect(await lauf('erledigt', '1 #3')).toBe('„Eins“: erledigt.\n„Drei“: erledigt.')
+  expect(await lauf('weg', '2')).toBe('„Zwei“: verworfen.')
+  expect(await lauf('erledigt', 'alles')).toContain('Verwendung: /erledigt')
+  expect(kurzNummern('2, 2 4')).toEqual([2, 4])
+  await uhr.settle()
+  expect(dateien.get(OFFEN)).not.toContain('### 1. Eins')
 })
 
 test('„erledigt: #N“ von Claude schließt sofort, /offen zeigt es mit 🤖, aktuell öffnet wieder', async ($, on) => {
