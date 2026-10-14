@@ -41,9 +41,9 @@ export function trefferquote(c: CacheStand): number | undefined {
   return c.summeGesamt > 0 ? Math.round((100 * c.summeGelesen) / c.summeGesamt) : undefined
 }
 
-export function stufeFarbe(prozent: number, warn: number): 'success' | 'warning' | 'error' {
+export function stufeFarbe(prozent: number, warn: number, ueberTokens = false): 'success' | 'warning' | 'error' {
   if (prozent >= 85) return 'error'
-  if (prozent >= warn) return 'warning'
+  if (prozent >= warn || ueberTokens) return 'warning'
   return 'success'
 }
 
@@ -54,6 +54,8 @@ export function hinweise(
   jetzt: number,
   arbeitet: boolean,
   warnProzent: number,
+  // Absolute Schwelle, 0 = aus; bei großem Kontextfenster greift sie lange vor der Prozentschwelle.
+  warnTokens = 0,
 ): Hinweis[] {
   const liste: Hinweis[] = []
   const tokens = m?.tokens ?? 0
@@ -66,11 +68,11 @@ export function hinweise(
         stufe: 'warn',
         text: 'Auto-Compact steht bevor – besser jetzt selbst /compact mit Fokus, z. B. „/compact behalte den Plan und offene Punkte“',
       })
-    } else if (m.percent >= warnProzent) {
+    } else if (m.percent >= warnProzent || (warnTokens > 0 && tokens >= warnTokens)) {
       liste.push({
         schluessel: 'kontext-warn',
         stufe: 'info',
-        text: `Kontext ${m.percent} % – nach Abschluss der Aufgabe /compact, bei neuem Thema /clear`,
+        text: `Kontext ${m.percent >= warnProzent ? `${m.percent} %` : k(tokens)} – nach Abschluss der Aufgabe /compact, bei neuem Thema /clear`,
       })
     }
   }
@@ -151,6 +153,7 @@ export function segmente(
   arbeitet: boolean,
   warnProzent: number,
   modell?: Modell | null,
+  warnTokens = 0,
 ): Segment[] {
   const s: Segment[] = []
   const p = m.percent ?? 0
@@ -160,7 +163,7 @@ export function segmente(
     s.push(seg(1, { t: '◆ ', farbe: 'claude' }, { t: modellName(modell.id), bold: true }, ...(modell.effort ? [{ t: ` ${modell.effort}`, dim: true }] : [])))
   }
 
-  const farbe = stufeFarbe(p, warnProzent)
+  const farbe = stufeFarbe(p, warnProzent, warnTokens > 0 && tokens >= warnTokens)
   const b = feinbalken(p)
   const kontext: Teil[] = [{ t: 'Kontext ', dim: true }, { t: b.voll, farbe }, { t: b.rest, dim: true }, { t: ` ${p} %`, farbe, bold: true }]
   s.push(seg(0, ...kontext))

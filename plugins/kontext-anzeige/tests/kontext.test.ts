@@ -39,6 +39,15 @@ describe('Hinweise', () => {
     expect(schluessel(messung(70, { autoCompactAb: 150_000 }), cache(MIN))).toEqual(['kontext-kritisch'])
   })
 
+  test('warnt zusätzlich ab einer Token-Schwelle', async () => {
+    const gross = messung(25, { tokens: 250_000, window: 1_000_000 })
+    expect(hinweise(gross, cache(MIN), JETZT, false, 60).map(h => h.schluessel)).toEqual([])
+    const h = hinweise(gross, cache(MIN), JETZT, false, 60, 200_000)
+    expect(h.map(x => x.schluessel)).toEqual(['kontext-warn'])
+    expect(h[0]?.text).toContain('250k')
+    expect(hinweise(messung(25, { tokens: 150_000, window: 1_000_000 }), cache(MIN), JETZT, false, 60, 200_000)).toEqual([])
+  })
+
   test('warnt kurz vor Cache-Ablauf, nicht während Claude arbeitet', async () => {
     expect(schluessel(messung(30), cache(56 * MIN))).toEqual(['cache-bald'])
     expect(schluessel(messung(30), cache(56 * MIN), true)).toEqual([])

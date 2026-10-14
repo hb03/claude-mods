@@ -42,6 +42,7 @@ function ausUsage(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>, alt:
 // Einstellungen, von register gesetzt.
 let ttlEinstellung = 'auto'
 let warnProzent = 60
+let warnTokens = 0
 let systemMeldung = false
 // Bereits gezeigte Einblendungen; ein Schlüssel wird wieder frei, sobald sein Hinweis verschwindet.
 const gezeigt = new Set<string>()
@@ -62,7 +63,7 @@ let letzterDateiInhalt: string | undefined
 async function pruefeHinweise($: EngineInterface) {
   const [m, c, arbeitet] = await Promise.all([read($, messungA), read($, cacheA), read($, arbeitetA)])
   const jetzt = await $.clock.now()
-  const aktuell = hinweise(m, c, jetzt, arbeitet, warnProzent)
+  const aktuell = hinweise(m, c, jetzt, arbeitet, warnProzent, warnTokens)
   const schluessel = new Set(aktuell.map(x => x.schluessel))
   for (const s of [...gezeigt]) if (!schluessel.has(s)) gezeigt.delete(s)
   for (const x of aktuell) {
@@ -120,7 +121,7 @@ async function spiegeleStatus(
   const ohneZeile = fernsteuerung || flaechen.some(f => f !== 'terminal' && f !== 'desktop')
   let text: string | undefined
   if (ohneZeile && m && m.tokens !== undefined) {
-    const teile = einpassen(segmente(m, c && c.letzteAntwortAm > 0 ? c : null, jetzt, arbeitet, warnProzent, modell), 110)
+    const teile = einpassen(segmente(m, c && c.letzteAntwortAm > 0 ? c : null, jetzt, arbeitet, warnProzent, modell, warnTokens), 110)
     text = teile.map(x => x.text).join(TRENNER)
     const erster = arbeitet ? undefined : aktuell[0]
     if (erster) text += `\n→ ${erster.text}`
@@ -173,6 +174,7 @@ async function messen($: EngineInterface, mitAufschluesselung: boolean) {
 export const register: Register = (on, options) => {
   ttlEinstellung = String(options.cacheTtl ?? 'auto')
   warnProzent = Number(options.warnProzent ?? 60)
+  warnTokens = Number(options.warnTokens ?? 0)
   systemMeldung = options.systemMeldung === true
   probeBis = 0
   letzterDateiInhalt = undefined
@@ -398,7 +400,7 @@ export const register: Register = (on, options) => {
     }
 
     const arbeitet = await read($, arbeitetA)
-    const tipps = hinweise(m ? { ...m, ...ausUsage(u, m) } : ausUsage(u, null), c, jetzt, arbeitet, warnProzent)
+    const tipps = hinweise(m ? { ...m, ...ausUsage(u, m) } : ausUsage(u, null), c, jetzt, arbeitet, warnProzent, warnTokens)
     const flaechen = await $.session.surfaces()
     const ohneZeile = fernsteuerung || flaechen.some(f => f !== 'terminal' && f !== 'desktop')
     z.push('', `Oberflächen: ${flaechen.join(', ') || 'keine'}${fernsteuerung ? ', Fernsteuerung' : ''}${ohneZeile ? ' – Kurzfassung steht zusätzlich in der Statuszeile' : ''}`)
