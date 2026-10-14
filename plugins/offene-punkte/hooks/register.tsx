@@ -16,6 +16,7 @@ import {
   HINWEIS_BLOCK, aenderungenZuIds, abgelehnteAenderungen, beiClaudeFertig, blockLesen, insInterview, interviewNummer,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
   installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, neuerAlsLaufend,
+  UEBERGABE, indexZeile, ueberblickKontext, uebergabeDateien, uebergabeIndex, uebergabeKontext, uebergabeName, uebergabeText,
 } from './logik'
 import type { Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
@@ -124,6 +125,11 @@ let eingangLaeuft = false
 let letzterMensch = 0
 // Die installierte Fassung (installed_plugins.json), wenn sie von der laufenden abweicht - steht in offen.json.
 let installiert = ''
+// Neue Unterhaltung (Start ohne Verlauf, /clear), deren erste Nachricht noch aussteht: sie bekommt die
+// wartende Uebergabe oder den Ueberblick der letzten Sitzung mit.
+let frisch = false
+// In uebergaben/: der Name der Uebergabe, die die naechste neue Unterhaltung bekommt (leer: keine).
+const WARTET = 'wartet.txt'
 
 async function sicht($: EngineInterface): Promise<Sicht> {
   return { sitzung, jetzt: await $.clock.now() }
@@ -408,6 +414,119 @@ async function ueberblickErneuern($: EngineInterface, anlass: string): Promise<s
   } finally {
     ueberblickLaeuft = false
   }
+}
+
+// ---------------------------------------------------------------- Uebergabe
+
+async function uebergabeOrdner($: EngineInterface): Promise<string | null> {
+  const o = await ablageOrt($)
+  return o === null ? null : `${o.ordner}/uebergaben`
+}
+
+async function uebergabenIn($: EngineInterface, archiv: string): Promise<string[]> {
+  const l = await $.fs.list(archiv).catch(() => [])
+  return uebergabeDateien(l.filter(x => x.kind === 'file').map(x => x.name))
+}
+
+const wartende = ($: EngineInterface, archiv: string) =>
+  $.fs.read(`${archiv}/${WARTET}`).then(t => String(t).trim()).catch(() => '')
+
+/**
+ * /offen übergabe: ein Fork des Hauptmodells (aus dem Prompt-Cache) schreibt die Uebergabe ins Archiv
+ * uebergaben/, wartet.txt merkt sie fuer die naechste neue Unterhaltung vor. Erst wenn beides
+ * nachweislich steht, folgt /clear (ohne „nur“); scheitert etwas, bleibt die Sitzung, wie sie ist.
+ */
+async function uebergabeSchreiben($: EngineInterface, clear: boolean): Promise<string> {
+  if (turnLaeuft) return 'Claude arbeitet noch – /offen übergabe, wenn die Antwort fertig ist.'
+  const archiv = await uebergabeOrdner($)
+  if (archiv === null) return 'Kein Ablageort für die Übergabe.'
+  $.ui.toast('Übergabe wird geschrieben …', { timeoutMs: 4000 })
+  const r = await $.model.fork({ prompt: UEBERGABE })
+  if (!r.isAnswered) {
+    return r.reason === 'nothing-to-fork'
+      ? 'Noch nichts zu übergeben – die Sitzung hat noch keine Antwort.'
+      : `Übergabe nicht geschrieben (${r.reason}); die Sitzung bleibt, wie sie ist.`
+  }
+  if (r.text.trim() === '') return 'Übergabe nicht geschrieben (leere Antwort); die Sitzung bleibt, wie sie ist.'
+  const [jetzt, vorhanden] = await Promise.all([$.clock.now(), uebergabenIn($, archiv)])
+  const name = uebergabeName(jetzt, vorhanden)
+  const datei = `${archiv}/${name}`
+  const text = uebergabeText(r.text, jetzt, sitzung)
+  // Zurueckgelesen statt vertraut: ein /clear auf eine halb geschriebene Datei waere nicht mehr gutzumachen.
+  const steht = await $.fs.write(datei, text).then(() => $.fs.read(datei)).then(t => String(t) === text).catch(() => false)
+  const vorgemerkt = steht && await $.fs.write(`${archiv}/${WARTET}`, `${name}\n`).then(() => wartende($, archiv)).then(w => w === name).catch(() => false)
+  if (!vorgemerkt) return `Übergabe nicht gespeichert (${datei}); die Sitzung bleibt, wie sie ist.`
+  const index = await $.fs.read(`${archiv}/index.md`).then(t => String(t)).catch(() => '')
+  await $.fs.write(`${archiv}/index.md`, uebergabeIndex(index, name, r.text, jetzt))
+    .catch(fehler => $.ui.log(`offene-punkte: Übergaben-Index nicht geschrieben (${String(fehler)})`))
+  $.ui.log(`offene-punkte: Übergabe ${datei}`)
+  if (!clear) return `Übergabe gespeichert: ${datei}\nDie nächste neue Unterhaltung (nach /clear oder Neustart) bekommt sie mit der ersten Nachricht.`
+  // Nicht im Hook selbst: aus /offen (command.run) heraus lehnt die Engine einen weiteren Befehl ab.
+  $.clock.after(0, () => void clearNachUebergabe($))
+  return `Übergabe gespeichert: ${datei}\n/clear folgt – die neue Unterhaltung bekommt sie mit deiner ersten Nachricht.`
+}
+
+/** /clear nach der Uebergabe; nimmt die Engine es nicht an, liegt es in der (leeren) Eingabe. */
+async function clearNachUebergabe($: EngineInterface) {
+  try {
+    await $.command.run({ command: 'clear' })
+  } catch (fehler) {
+    $.ui.log(`offene-punkte: /clear nicht ausgeführt (${String(fehler)})`)
+    const box = await $.prompt.read().catch(() => null)
+    const gefuellt = box !== null && box.text.trim() === ''
+      && await $.prompt.fill({ text: '/clear', mode: 'replace' }).then(f => f.isFilled).catch(() => false)
+    $.ui.toast(gefuellt ? 'Übergabe gespeichert – /clear liegt in der Eingabe, Enter löscht den Verlauf.' : 'Übergabe gespeichert – jetzt /clear eingeben.', { timeoutMs: 10_000 })
+  }
+}
+
+async function uebergabenListe($: EngineInterface): Promise<string> {
+  const archiv = await uebergabeOrdner($)
+  if (archiv === null) return 'Kein Ablageort für Übergaben.'
+  const namen = await uebergabenIn($, archiv)
+  if (namen.length === 0) return 'Noch keine Übergaben – /offen übergabe schreibt eine und leert danach den Verlauf (/offen übergabe nur: ohne /clear).'
+  const [index, wartet] = await Promise.all([$.fs.read(`${archiv}/index.md`).then(t => String(t)).catch(() => ''), wartende($, archiv)])
+  const zeilen = namen.slice(0, 20).map((n, i) => `${i + 1}. ${indexZeile(index, n)}${n === wartet ? ' – wartet auf die nächste Unterhaltung' : ''}`)
+  const mehr = namen.length > 20 ? `\n… und ${namen.length - 20} ältere` : ''
+  return `Übergaben (${namen.length}, neueste zuerst):\n${zeilen.join('\n')}${mehr}\n\n/offen übergabe <Nr> zeigt eine · Ordner: ${archiv}`
+}
+
+async function uebergabeZeigen($: EngineInterface, nummer: number): Promise<string> {
+  const archiv = await uebergabeOrdner($)
+  if (archiv === null) return 'Kein Ablageort für Übergaben.'
+  const namen = await uebergabenIn($, archiv)
+  const name = namen[nummer - 1]
+  if (name === undefined) return namen.length === 0 ? 'Noch keine Übergaben.' : `Keine Übergabe ${nummer} – es gibt ${namen.length} (/offen übergaben).`
+  const text = await $.fs.read(`${archiv}/${name}`).then(t => String(t)).catch(() => '')
+  return text === '' ? `${archiv}/${name} nicht lesbar.` : `${text.trimEnd()}\n\nDatei: ${archiv}/${name}`
+}
+
+/**
+ * Die erste Nachricht einer neuen Unterhaltung (Start ohne Verlauf, /clear): eine wartende Uebergabe
+ * geht ganz an Claude und gilt damit als abgeholt; sonst der Ueberblick der letzten Sitzung, wenn es
+ * einen gibt. Beides nur einmal - danach ist es Teil des Verlaufs.
+ */
+async function startKontext($: EngineInterface): Promise<string> {
+  const archiv = await uebergabeOrdner($)
+  if (archiv === null) return ''
+  const name = await wartende($, archiv)
+  if (name !== '') {
+    const datei = `${archiv}/${name}`
+    const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    await $.fs.write(`${archiv}/${WARTET}`, '')
+      .catch(fehler => $.ui.log(`offene-punkte: ${WARTET} nicht geleert (${String(fehler)})`))
+    if (text !== '') return uebergabeKontext(text, datei, archiv)
+  }
+  const u = await read($, ueberblickA)
+  if (u === '') return ''
+  const mitArchiv = (await uebergabenIn($, archiv)).length > 0
+  return ueberblickKontext(u, mitArchiv ? archiv : null)
+}
+
+/** Sagt in einer neuen Unterhaltung, dass eine Uebergabe bereitliegt. */
+async function uebergabeAnkuendigen($: EngineInterface) {
+  const archiv = await uebergabeOrdner($)
+  if (archiv === null || (await wartende($, archiv)) === '') return
+  $.ui.toast('Übergabe liegt bereit – sie geht mit deiner ersten Nachricht an Claude · /offen übergaben', { timeoutMs: 8000 })
 }
 
 /**
@@ -1097,6 +1216,9 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
     return `Prüfung von ${inArbeit.length} ${inArbeit.length === 1 ? 'Gedanken' : 'Gedanken'} geht an Claude.`
   }
   if (k.art === 'gedanke') return gedankeTun($, k.nummer, k.tun, k.text)
+  if (k.art === 'uebergabe') return uebergabeSchreiben($, k.clear)
+  if (k.art === 'uebergaben') return uebergabenListe($)
+  if (k.art === 'uebergabe-zeigen') return uebergabeZeigen($, k.nummer)
   if (k.art === 'ueberblick') {
     const u = await ueberblickErneuern($, 'befehl')
     return u !== '' ? `Überblick neu:\n${u}` : 'Überblick nicht erneuert (kein Verlauf, oder Haiku gerade nicht erlaubt).'
@@ -1221,6 +1343,7 @@ export const register: Register = (on, options) => {
   eingangLaeuft = false
   letzterMensch = 0
   installiert = ''
+  frisch = false
 
   on('session.start', async ($, e, next) => {
     // Ohne Menschen davor (claude -p, SDK) bleibt der Mod still: kein Werkzeug, kein Hinweis, kein Haiku -
@@ -1229,7 +1352,7 @@ export const register: Register = (on, options) => {
     turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären [alle], /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären [alle], /offen übergabe [nur] schreibt eine Übergabe für die nächste Sitzung und leert dann den Verlauf, /offen übergaben, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
     })
     await $.command.register({ name: 'erledigt', description: 'Kurzform: /erledigt 2 (oder 2 3) schließt offene Punkte wie /offen 2 erledigt' })
     await $.command.register({ name: 'weg', description: 'Kurzform: /weg 2 (oder 2 3) verwirft offene Punkte wie /offen 2 weg' })
@@ -1246,6 +1369,13 @@ export const register: Register = (on, options) => {
     sitzung = await $.session.id().catch(() => '')
     await versionPruefen($).catch(() => undefined)
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
+    // Neu ist die Unterhaltung nur ohne Verlauf: ein Neuladen des Mods mitten in der Sitzung oder
+    // --continue bekommen keine Uebergabe (die alte Unterhaltung kennt ihren Stand ja).
+    if (interaktiv) {
+      const verlauf = await Promise.resolve().then(() => $.session.messages()).catch(() => null)
+      frisch = Array.isArray(verlauf) && verlauf.length === 0
+      if (frisch) await uebergabeAnkuendigen($).catch(() => undefined)
+    }
     $.clock.after(0, () => {
       void verlaufAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht aufgeräumt (${String(fehler)})`))
     })
@@ -1308,6 +1438,10 @@ export const register: Register = (on, options) => {
           sitzung = await $.session.id().catch(() => alt)
           await aendere($, l => uebernehmen(zuruecknehmen(l), sitzung, alt))
           await laden($)
+          if (interaktiv) {
+            frisch = true
+            await uebergabeAnkuendigen($)
+          }
         })().catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
       })
     }
@@ -1329,7 +1463,12 @@ export const register: Register = (on, options) => {
     if (mitListe) claudeKennt = liste
     const hinweise = hinweiseFuerClaude
     hinweiseFuerClaude = []
-    const zusatz = [...(mitListe ? [liste] : []), ...hinweise]
+    // Erste Nachricht einer neuen Unterhaltung: Uebergabe oder Ueberblick der letzten Sitzung, einmal.
+    const start = interaktiv && frisch
+      ? await startKontext($).catch(fehler => (($.ui.log(`offene-punkte: Übergabe nicht gelesen (${String(fehler)})`)), ''))
+      : ''
+    frisch = false
+    const zusatz = [...(start !== '' ? [start] : []), ...(mitListe ? [liste] : []), ...hinweise]
     const kontext = zusatz.length > 0 ? { context: [...(e.context ?? []), ...zusatz] } : {}
     if (MASCHINEN.has(e.origin.kind)) {
       eingabeArt = 'maschine'
