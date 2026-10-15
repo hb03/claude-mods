@@ -56,3 +56,17 @@ for (const [bruecke, erwartet] of [
     expect(status.filter(t => t !== undefined).length).toBe(erwartet ? 1 : 0)
   })
 }
+
+test('Option statuszeile aus: auch bei Handy keine Statuszeile', { options: { statuszeile: false } }, async ($, on) => {
+  const status: (string | undefined)[] = []
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('session.surfaces', () => ({ value: ['terminal', 'mobile'] }))
+  on('clock.now', () => ({ value: 1_800_000_000_000 }))
+  on('ui.toast', () => ({ value: {} }))
+  on('ui.status', (_, e) => {
+    status.push((e as { text?: string }).text)
+    return { value: undefined }
+  })
+  await $.session.measure(MESSUNG)
+  expect(status.filter(t => t !== undefined).length).toBe(0)
+})

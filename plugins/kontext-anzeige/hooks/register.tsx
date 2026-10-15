@@ -48,6 +48,7 @@ let warnTokens = 0
 let warnTokensOption = 0
 let einstellungsDatei: string | undefined
 let systemMeldung = false
+let spiegelzeile = true
 // Bereits gezeigte Einblendungen; ein Schlüssel wird wieder frei, sobald sein Hinweis verschwindet.
 const gezeigt = new Set<string>()
 // Nach Compact, /clear oder Modellwechsel ist ein Cache-Fehlgriff erwartet und zählt nicht.
@@ -156,7 +157,7 @@ async function spiegeleStatus(
   const flaechen = await $.session.surfaces()
   const ohneZeile = fernsteuerung || flaechen.some(f => f !== 'terminal' && f !== 'desktop')
   let text: string | undefined
-  if (ohneZeile && m && m.tokens !== undefined) {
+  if (spiegelzeile && ohneZeile && m && m.tokens !== undefined) {
     const teile = einpassen(segmente(m, c && c.letzteAntwortAm > 0 ? c : null, jetzt, arbeitet, warnProzent, modell, warnTokens), 110)
     text = teile.map(x => x.text).join(TRENNER)
     const erster = arbeitet ? undefined : aktuell[0]
@@ -213,6 +214,7 @@ export const register: Register = (on, options) => {
   warnTokensOption = Number(options.warnTokens ?? 0)
   warnTokens = warnTokensOption
   systemMeldung = options.systemMeldung === true
+  spiegelzeile = options.statuszeile !== false
   probeBis = 0
   letzterDateiInhalt = undefined
   gezeigt.clear()
