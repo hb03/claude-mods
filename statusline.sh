@@ -12,6 +12,20 @@
 
 input=$(cat)
 
+# Unter Windows liegt jq nach "winget install" nur im PowerShell-PATH (WinGet\Links), nicht im PATH
+# der Git-Bash, mit der Claude Code dieses Skript startet. Den Ordner hier anhängen.
+if ! command -v jq >/dev/null 2>&1; then
+    for d in "${LOCALAPPDATA:-}/Microsoft/WinGet/Links" "$HOME/AppData/Local/Microsoft/WinGet/Links"; do
+        [ -x "$d/jq.exe" ] && { PATH="$PATH:$d"; break; }
+    done
+fi
+
+# Ohne jq bleibt alles leer: das klar sagen, statt eine halbe Zeile zu zeigen.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "⚠ jq fehlt – Statuszeile nicht möglich (Windows: winget install jqlang.jq, jq.exe in einen Ordner im Git-Bash-PATH, z. B. ~/bin)"
+    exit 0
+fi
+
 # ---------- alle Felder mit einem jq-Aufruf ----------
 IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_read cache_write \
     cost added removed five five_reset week week_reset session_id < <(

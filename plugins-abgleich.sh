@@ -16,6 +16,14 @@ mp=eigene-plugins
 liste="$HOME/.claude/plugins/marketplaces/$mp/.claude-plugin/marketplace.json"
 settings="$HOME/.claude/settings.json"
 
+# Unter Windows liegt jq nach "winget install" nur im PowerShell-PATH (WinGet\Links), nicht im PATH
+# der Git-Bash, mit der Claude Code dieses Skript startet. Den Ordner hier anhängen.
+if ! command -v jq >/dev/null 2>&1; then
+    for d in "${LOCALAPPDATA:-}/Microsoft/WinGet/Links" "$HOME/AppData/Local/Microsoft/WinGet/Links"; do
+        [ -x "$d/jq.exe" ] && { PATH="$PATH:$d"; break; }
+    done
+fi
+
 [ -f "$liste" ] || exit 0
 if ! command -v jq >/dev/null 2>&1; then
   echo '{"systemMessage":"plugins-abgleich: jq fehlt, neue Plugins aus eigene-plugins werden nicht installiert."}'

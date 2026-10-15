@@ -31,6 +31,7 @@ holt Updates sofort, statt auf das Auto-Update zu warten.
   Installationsbefehl nennen (Windows: `winget install jqlang.jq`, Debian/Ubuntu:
   `sudo apt install jq`, macOS: `brew install jq`) und erst nach Zustimmung
   ausführen.
+- **Windows: jq muss in der Git-Bash gefunden werden**, nicht nur in PowerShell. Claude Code startet Statuszeile und Hook mit `bash.exe`, und `winget` legt `jq.exe` nur nach `%LOCALAPPDATA%\Microsoft\WinGet\Links`, das nicht im PATH der Git-Bash steht. Prüfen mit `"C:/Program Files/Git/bin/bash.exe" -c 'command -v jq'`. Bleibt die Ausgabe leer, `jq.exe` aus diesem Ordner in einen Ordner im Git-Bash-PATH kopieren (z. B. `~/bin`, vorher mit `bash.exe -c 'echo $PATH'` prüfen, dass er dort steht) und die Prüfung wiederholen. Sonst zeigt die Statuszeile nur „jq fehlt“. (`statusline.sh` und `plugins-abgleich.sh` hängen den WinGet-Ordner selbst an, das Kopieren ist die zweite Absicherung.)
 - Unter Windows den Pfad zu Git-Bash ermitteln (meist
   `C:/Program Files/Git/bin/bash.exe`); den braucht Schritt 4 und 5.
 
