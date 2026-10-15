@@ -176,12 +176,18 @@ export function segmente(
     s.push(seg(1, { t: '◆ ', farbe: 'claude' }, { t: modellName(modell.id), bold: true }, ...(modell.effort ? [{ t: ` ${modell.effort}`, dim: true }] : [])))
   }
 
-  const farbe = stufeFarbe(p, warnProzent, warnTokens > 0 && tokens >= warnTokens)
-  const b = feinbalken(p)
-  const kontext: Teil[] = [{ t: 'Kontext ', dim: true }, { t: b.voll, farbe }, { t: b.rest, dim: true }, { t: ` ${p} %`, farbe, bold: true }]
-  s.push(seg(0, ...kontext))
-  s.push(seg(4, { t: `${k(tokens)}/${k(m.window)}`, dim: true }))
-  if (m.autoCompactAb !== undefined) {
+  // Ohne Messwert (neues Fenster, nach /clear) keinen Füllstand erfinden.
+  const gemessen = m.percent !== undefined
+  if (gemessen) {
+    const farbe = stufeFarbe(p, warnProzent, warnTokens > 0 && tokens >= warnTokens)
+    const b = feinbalken(p)
+    const kontext: Teil[] = [{ t: 'Kontext ', dim: true }, { t: b.voll, farbe }, { t: b.rest, dim: true }, { t: ` ${p} %`, farbe, bold: true }]
+    s.push(seg(0, ...kontext))
+    s.push(seg(4, { t: `${k(tokens)}/${k(m.window)}`, dim: true }))
+  } else {
+    s.push(seg(0, { t: 'Kontext ', dim: true }, { t: '–', dim: true }))
+  }
+  if (gemessen && m.autoCompactAb !== undefined) {
     const bis = m.autoCompactAb - tokens
     const knapp = bis < m.autoCompactAb * 0.15
     s.push(seg(3, { t: '⇢ Compact ', dim: true }, bis > 0 ? { t: `in ${k(bis)}`, farbe: knapp ? 'warning' : undefined, dim: !knapp } : { t: 'fällig', farbe: 'error', bold: true }))

@@ -1,6 +1,6 @@
 {
   "name": "kontext-anzeige",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Hinweise, wann /compact, /clear oder Weitermachen sinnvoll ist: Kontextfüllung, Prompt-Cache, Auto-Compact und Limits. Schreibt die Werte für die Statuszeile, die Warnungen zeigt offene-punkte über der Eingabe; /kontext zeigt Details, /kontext test probiert Einblendung, Statuszeile und Systemmeldung aus.",
   "types": "./types/index.d.ts",
   "userConfig": {

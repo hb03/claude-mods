@@ -112,6 +112,15 @@ describe('Zeile', () => {
     expect(text).not.toContain('5h')
   })
 
+  test('ohne Messwert steht „Kontext –“ statt 0 %', async () => {
+    const m = messung(42, { autoCompactAb: 160_000 })
+    const text = segmente({ ...m, percent: undefined, tokens: undefined }, cache(MIN), JETZT, false, 60).map(x => x.text).join(' │ ')
+    expect(text).toContain('Kontext –')
+    expect(text).not.toMatch(/Kontext[^│]*\d+ %/)
+    expect(text).not.toContain('░')
+    expect(text).not.toContain('Compact')
+  })
+
   test('Modellnamen und Feinbalken', async () => {
     expect(modellName('claude-opus-5-5')).toBe('Opus 5.5')
     expect(modellName('claude-fable-5-1[1m]')).toBe('Fable 5.1')
