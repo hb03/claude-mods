@@ -20,12 +20,12 @@ IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_re
         (.workspace.project_dir // ""),
         (.model.display_name // .model.id // "Claude"),
         (.effort.level // ""),
-        (.context_window.used_percentage // 0),
+        (.context_window.used_percentage // ""),
         (.context_window.context_window_size // 0),
         (.context_window.current_usage.input_tokens // 0),
         (.context_window.current_usage.cache_read_input_tokens // 0),
         (.context_window.current_usage.cache_creation_input_tokens // 0),
-        (.cost.total_cost_usd // 0),
+        (.cost.total_cost_usd // ""),
         (.cost.total_lines_added // 0),
         (.cost.total_lines_removed // 0),
         (.rate_limits.five_hour.used_percentage // ""),
@@ -119,6 +119,10 @@ BEGIN {
     ctx = bar " " emoji " \033[1m" rgb(p) p "%" R
     if (window > 0 && tok > 0) ctx = ctx DIM " " kurz(tok) "/" kurz(window) R
     if (ac != "" && tok > 0) { bis = ac - tok; ctx = ctx (bis > ac * 0.15 ? DIM " ⇢" kurz(bis) R : WARN " ⇢" (bis > 0 ? kurz(bis) : "Compact!") R) }
+    if (pct == "") {                      # noch kein Messwert (frisch nach /clear): keinen Füllstand erfinden
+        bar = ""; for (i = 1; i <= 20; i++) bar = bar DUNKEL "█" R
+        ctx = bar " " DIM "Kontext –" R
+    }
     line = line SEP ctx
 
     # Cache: Restzeit und Quote vom Mod, sonst die Quote der letzten Anfrage
@@ -138,7 +142,7 @@ BEGIN {
     if (week != "") { w = int(week + 0.5); lim = lim (lim != "" ? " " : "") "📅" "\033[1m" rgb(w) w "%" R (w >= 80 ? DIM " ↻" uhr(week_reset) R : "") }
     if (lim != "") line = line SEP lim
 
-    line = line SEP "\033[38;2;255;215;0m💰 " sprintf("$%.2f", cost) R
+    line = line SEP (cost == "" ? DIM "💰 –" R : "\033[38;2;255;215;0m💰 " sprintf("$%.2f", cost) R)
     if (added + removed > 0) line = line SEP GRUEN "+" added R " " ROT "-" removed R
     print line
 
