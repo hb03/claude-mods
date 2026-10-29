@@ -9,6 +9,7 @@ Mods für [Claude Code](https://claude.com/claude-code) (deutschsprachig), als P
 | `push-wache` | Prüft vor jedem `git push`, den Claude in ein öffentliches Repo macht (GitHub, GitLab, Bitbucket, Codeberg), die neuen Commits: eigene Muster wie Namen, Servernamen oder Pfade (Option `muster`, ein regulärer Ausdruck), Autor- und Committer-Mails (Option `mails`, Standard: GitHub-noreply) und typische Geheimnisse (API-Schlüssel, Tokens, private Schlüssel, Passwörter). Bei einem Fund fragt der eingebaute Frage-Dialog mit den Fundstellen: abbrechen oder trotzdem pushen. Pushes von Hand im Terminal sieht sie nicht. |
 | `commit-erinnerung` | Läuft ein Testbefehl grün durch (phpunit, pest, npm/pnpm/yarn test, pytest, vitest, jest, cargo/go/make test, `claude plugin test` u. a.; weitere per Option `testbefehle`) und liegen danach uncommittete Änderungen im Repo, bekommt Claude still einen Hinweis, den Arbeitsschritt zu committen – für denselben Stand nur einmal. Fehlschläge erkennt er auch hinter einer Pipe (`npm test \| tail`). |
 | `haiku-helfer` | Drei Subagenten auf Haiku für Fleißarbeit: `log-sucher` sichtet Logs und lange Ausgaben und meldet nur den Befund, `datei-finder` findet Dateien und Stellen (`pfad:zeile`), `status-abfrage` fragt Geräte und Dienste nur lesend ab. Ihre Beschreibung sagt „use proactively“, so gibt Claude solche Aufgaben von selbst an das günstige Modell ab, statt sie mit dem Hauptmodell zu erledigen. |
+| `hintergrund-befehle` | Gibt jeder Sitzung (auch nach einer Compaction) als eigenen Abschnitt im Systemprompt die Regel mit, Shell-Befehle, die voraussichtlich länger als etwa eine Minute brauchen – `git clone`, Installationen (winget, apt, pip, npm), Builds, große Downloads, Einrichtungsskripte, lange Tests –, selbst mit `run_in_background` zu starten und danach nicht zu pollen; kurze Befehle, deren Ergebnis sofort gebraucht wird, bleiben im Vordergrund. Muss der Nutzer trotzdem einen Bash- oder PowerShell-Befehl per Strg+B wegschieben, bekommt Claude still einen Hinweis am Ergebnis. |
 
 Dazu `statusline.sh`: eine Statuszeile unter der Eingabe mit Repo, Zweig, Modell und Aufwand, Kontextbalken,
 Cache (Restzeit und Treffer, mit `kontext-anzeige`), 5-h- und Wochenlimit, Kosten und geänderten Zeilen.
@@ -33,6 +34,7 @@ Von Hand, in Claude Code:
 /plugin install push-wache@eigene-plugins
 /plugin install commit-erinnerung@eigene-plugins
 /plugin install haiku-helfer@eigene-plugins
+/plugin install hintergrund-befehle@eigene-plugins
 ```
 
 Automatisch aktuell halten – in `~/.claude/settings.json`:

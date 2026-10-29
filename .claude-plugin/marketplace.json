@@ -41,6 +41,13 @@
       "description": "Agenten: log-sucher, datei-finder und status-abfrage laufen auf Haiku und übernehmen Logs sichten, Suchen und Zustandsabfragen, damit das Hauptmodell dafür keine Tokens verbraucht.",
       "version": "0.1.0",
       "category": "agents"
+    },
+    {
+      "name": "hintergrund-befehle",
+      "source": "./plugins/hintergrund-befehle",
+      "description": "Mod: Claude startet lang laufende Shell-Befehle (Klonen, Installationen, Builds, Downloads, Einrichtungsskripte) selbst im Hintergrund, damit niemand Strg+B drücken muss; schiebt der Nutzer doch einen per Strg+B weg, bekommt Claude still einen Hinweis.",
+      "version": "0.1.0",
+      "category": "mod"
     }
   ]
 }

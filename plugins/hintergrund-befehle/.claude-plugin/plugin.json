@@ -1,0 +1,5 @@
+{
+  "name": "hintergrund-befehle",
+  "version": "0.1.0",
+  "description": "Claude startet lang laufende Shell-Befehle (Klonen, Installationen, Builds, Downloads, Einrichtungsskripte) selbst im Hintergrund, damit niemand Strg+B drücken muss; schiebt der Nutzer doch einen per Strg+B weg, bekommt Claude still einen Hinweis."
+}
