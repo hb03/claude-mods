@@ -3,7 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Ausstehend, Option, Punkt, Warnung } from '../types'
 import {
-  AUFTRAG, UEBERBLICK_NEU, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage, kurzNummern,
+  AUFTRAG, WARTEZEIT, ZUSAMMENFASSUNG, ueberblickAus, abgleichen, abschliessen, ablageLesen, alteVerlaeufe, antwortIn, ausfuehrBitte, ablageText, anfrage, kurzNummern,
   auswerten as auswertenNoetig, ausnahmeErgaenzen, ausstehende, befehlLabel, befehle, brauchtErgaenzung, datum, fragbar, fremd, istVeraltet,
   hoechsteImVerlauf, hoechsteNr, kommando, lies, mitCompact, monatsKopf, nichtsFragbar, notiz, nummerieren, offene, ordnerName, ruhe, sammelText, statuszeile, stempeln, tagAnhaengen,
   ruht, ruheVermerk, uebernehmen, verlaufKopf, verlaufsEintraege, vermerk, zuZeigen, zuruecknehmen, zusammenfuehren,
@@ -12,12 +12,12 @@ import {
   listeFuerClaude, veraltetSchliessen, zuletztGeschlossen, zuletztFertig,
   ABGLEICH_AUFTRAG, abgleichAnfrage, abgleichAnwenden, abgleichKandidaten, entscheidungenAus, liesAbgleich,
   ABGLEICH_TAKT_MS, BUDGET_GRENZE, ablageDaten, bitteZu, eingetippteAntworten, istMaschinenEingabe, klaerungsBitte, kostenZeile,
-  EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen, verlaufsText,
+  EINGANG_RUHE_MS, EINGANG_TAKT_MS, EINGANG_WACH_MS, NACHFASSEN_AUFTRAG, UEBERBLICK_NACH, eingangZeilen,
   HINWEIS_BLOCK, aenderungenZuIds, abgelehnteAenderungen, beiClaudeFertig, blockLesen, insInterview, interviewNummer,
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
   installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, neuerAlsLaufend,
   UEBERGABE, indexZeile, ueberblickKontext, uebergabeDateien, uebergabeIndex, uebergabeKontext, uebergabeName, uebergabeText,
-  LEBT_MS, SPERRE_ALT_MS, abgleichFaellig, alteReste, befehlEntfernen, befehlFreigeben, befehlSperren, befehlVerschieben, geschlossenFuehren, zuGeschlossen,
+  LEBT_MS, SPERRE_ALT_MS, abgleichFaellig, kontextZeile, kostenAuswerten, ueberblickAnfrage, alteReste, befehlEntfernen, befehlFreigeben, befehlSperren, befehlVerschieben, geschlossenFuehren, zuGeschlossen,
 } from './logik'
 import type { Ablage, Geschlossen, Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
@@ -121,6 +121,10 @@ let budgetGrenze = BUDGET_GRENZE
 // Ueberblick: laeuft gerade einer, und wie viele fertige Menschen-Turns seit dem letzten.
 let ueberblickLaeuft = false
 let fertigeTurns = 0
+// Bis zu welcher Nachricht ($.session.messages()) der Ueberblick reicht, und wie oft er seit dem letzten
+// Neuschreiben fortgeschrieben wurde (0: der naechste schreibt ganz neu).
+let ueberblickBis = 0
+let fortgeschrieben = 0
 // Eingang (eingang.txt): der naechste Blick hinein - alle 15 s, solange ein Mensch arbeitet, sonst seltener.
 let eingangTakt: Timer | null = null
 let eingangLaeuft = false
@@ -408,17 +412,18 @@ type ModellAntwort = Awaited<ReturnType<EngineInterface['model']['complete']>> |
 async function haiku($: EngineInterface, art: string, request: Parameters<EngineInterface['model']['complete']>[0]): Promise<ModellAntwort> {
   if (!(await haikuErlaubt($))) return { isAnswered: false, reason: 'budget' }
   const r = await $.model.complete(request)
-  if (r.isAnswered && r.usage !== undefined) {
-    const o = await ablageOrt($)
-    if (o !== null) {
-      const datei = `${o.ordner}/kosten.jsonl`
-      const alt = await $.fs.read(datei).then(t => String(t)).catch(() => '')
-      // Nicht endlos wachsen lassen: ab 200 kB bleibt der juengere Teil.
-      const basis = alt.length > 200_000 ? alt.slice(alt.indexOf('\n', alt.length - 150_000) + 1) : alt
-      await $.fs.write(datei, `${basis}${kostenZeile(art, r.usage, sitzung, await $.clock.now())}\n`).catch(() => undefined)
-    }
-  }
+  if (r.isAnswered && r.usage !== undefined) await kostenSchreiben($, kostenZeile(art, r.usage, sitzung, await $.clock.now()))
   return r
+}
+
+/** Eine Zeile an kosten.jsonl im Projektordner anhaengen; ab 200 kB bleibt der juengere Teil. */
+async function kostenSchreiben($: EngineInterface, zeile: string) {
+  const o = await ablageOrt($)
+  if (o === null) return
+  const datei = `${o.ordner}/kosten.jsonl`
+  const alt = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+  const basis = alt.length > 200_000 ? alt.slice(alt.indexOf('\n', alt.length - 150_000) + 1) : alt
+  await $.fs.write(datei, `${basis}${zeile}\n`).catch(() => undefined)
 }
 
 /** Liste aendern; was dabei geschlossen oder wieder geoeffnet wird, geht in den Verlauf. Alles landet in der Datei. */
@@ -546,13 +551,19 @@ async function ueberblickErneuern($: EngineInterface, anlass: string): Promise<s
   try {
     const nachrichten = await Promise.resolve().then(() => $.session.messages()).catch(() => null)
     if (!Array.isArray(nachrichten)) return ''
-    const verlauf = verlaufsText(nachrichten as readonly Nachricht[])
-    if (verlauf === '') return ''
+    const liste = nachrichten as readonly Nachricht[]
+    // Auf Wunsch (/offen ueberblick) und nach einer Compaction (der Verlauf ist ein anderer) ganz neu,
+    // sonst fortschreiben: alter Ueberblick plus die Nachrichten seither - rund ein Drittel der Tokens.
+    const ganz = anlass === 'befehl' || anlass === 'compaction'
+    const a = ueberblickAnfrage(liste, ganz ? '' : await read($, ueberblickA), ueberblickBis, fortgeschrieben)
+    if (a === null) return ''
     const r = await haiku($, 'ueberblick', {
       model: modell,
-      system: [{ text: UEBERBLICK_NEU, cache: true }],
-      prompt: `VERLAUF (älteste Nachricht zuerst):\n\n${verlauf}`,
-      maxTokens: 400,
+      system: a.system,
+      prompt: a.prompt,
+      // Die Ausgabe ist eine Liste von 8 Zeilen; mehr Denken bringt hier nichts (Ausgabe kostet fuenffach).
+      maxTokens: 500,
+      effort: 'low',
       timeoutMs: 45_000,
     })
     if (!r.isAnswered) {
@@ -562,9 +573,11 @@ async function ueberblickErneuern($: EngineInterface, anlass: string): Promise<s
     const u = ueberblickAus(r.text)
     if (u === '') return ''
     await update($, ueberblickA, () => u)
+    ueberblickBis = liste.length
+    fortgeschrieben = a.modus === 'fort' ? fortgeschrieben + 1 : 0
     await speichern($)
     fertigeTurns = 0
-    $.ui.log(`offene-punkte: Überblick neu (${anlass})`)
+    $.ui.log(`offene-punkte: Überblick ${a.modus === 'fort' ? 'fortgeschrieben' : 'neu'} (${anlass})`)
     return u
   } finally {
     ueberblickLaeuft = false
@@ -1392,6 +1405,11 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   if (k.art === 'uebergabe') return uebergabeSchreiben($, k.clear)
   if (k.art === 'uebergaben') return uebergabenListe($)
   if (k.art === 'uebergabe-zeigen') return uebergabeZeigen($, k.nummer)
+  if (k.art === 'kosten') {
+    const o = await ablageOrt($)
+    const text = o === null ? '' : await $.fs.read(`${o.ordner}/kosten.jsonl`).then(t => String(t)).catch(() => '')
+    return kostenAuswerten(text, await $.clock.now(), k.tage)
+  }
   if (k.art === 'ueberblick') {
     const u = await ueberblickErneuern($, 'befehl')
     return u !== '' ? `Überblick neu:\n${u}` : 'Überblick nicht erneuert (kein Verlauf, oder Haiku gerade nicht erlaubt).'
@@ -1512,6 +1530,8 @@ export const register: Register = (on, options) => {
   abgleichTakt = null
   ueberblickLaeuft = false
   fertigeTurns = 0
+  ueberblickBis = 0
+  fortgeschrieben = 0
   eingangTakt = null
   eingangLaeuft = false
   letzterMensch = 0
@@ -1528,7 +1548,7 @@ export const register: Register = (on, options) => {
     turnLaeuft = false
     await $.command.register({
       name: 'offen',
-      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären [alle], /offen übergabe [nur] schreibt eine Übergabe für die nächste Sitzung und leert dann den Verlauf, /offen übergaben, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen leeren',
+      description: 'Zeigt, was noch offen ist; /offen 2 erledigt|weg|später [sitzung|morgen|drei|woche], /offen 2 a wählt eine Antwort, /offen 2 <Text> antwortet frei, /offen alle weg|erledigt [Grund], /offen klären [alle], /offen übergabe [nur] schreibt eine Übergabe für die nächste Sitzung und leert dann den Verlauf, /offen übergaben, /offen neu <Text>, /offen gedanke <Text> notiert einen Einfall (gedanken.md), /offen gedanke 3 senden|interview|punkt, /offen kosten [Tage] zeigt, was der Mod gekostet hat, /offen leeren',
     })
     await $.command.register({ name: 'erledigt', description: 'Kurzform: /erledigt 2 (oder 2 3) schließt offene Punkte wie /offen 2 erledigt' })
     await $.command.register({ name: 'weg', description: 'Kurzform: /weg 2 (oder 2 3) verwirft offene Punkte wie /offen 2 weg' })
@@ -1587,6 +1607,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.agentId === undefined && !('skip' in r && r.skip !== undefined)) {
       claudeKennt = ''
+      ueberblickBis = 0
       // Der Ueberblick aus dem komprimierten Verlauf: die Zusammenfassung der Engine ist jetzt Teil davon.
       if (interaktiv) $.clock.after(0, () => void ueberblickErneuern($, 'compaction').catch(fehler => $.ui.log(`offene-punkte: Überblick (${String(fehler)})`)))
     }
@@ -1600,6 +1621,8 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear') {
       ort = null
       claudeKennt = ''
+      ueberblickBis = 0
+      fortgeschrieben = 0
       // Rückmeldungen zur alten Unterhaltung („Dein Block hat angelegt: #79“) gehören nicht in die neue.
       hinweiseFuerClaude = []
       eingabeArt = 'mensch'
@@ -1652,6 +1675,11 @@ export const register: Register = (on, options) => {
     frisch = false
     const zusatz = [...(start !== '' ? [start] : []), ...(mitListe ? [liste] : []), ...hinweise]
     const kontext = zusatz.length > 0 ? { context: [...(e.context ?? []), ...zusatz] } : {}
+    // Was der Mod dem Hauptmodell mitgibt, steht geschaetzt in kosten.jsonl (/offen kosten) - der teure Teil.
+    if (zusatz.length > 0) {
+      const zeile = kontextZeile({ uebergabe: start, liste: mitListe ? liste : '', hinweise: hinweise.join('\n') }, sitzung, eingangZeit)
+      $.clock.after(0, () => void kostenSchreiben($, zeile).catch(() => undefined))
+    }
     if (MASCHINEN.has(e.origin.kind)) {
       eingabeArt = 'maschine'
       return next({ ...e, ...kontext })
