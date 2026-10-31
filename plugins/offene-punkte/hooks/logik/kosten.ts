@@ -34,7 +34,19 @@ export const kontextZeile = (teile: Record<string, string>, sitzung: string, jet
   return JSON.stringify({ zeit: new Date(jetzt).toISOString(), sitzung, art: 'kontext', modell: 'haupt', geschaetzt: true, eingabe: summe, cache: 0, ausgabe: 0, teile: tokens, version: laufend })
 }
 
-type KostenZeile = { zeit: string; art: string; modell?: string; eingabe: number; cache: number; ausgabe: number; sitzung?: string }
+type KostenZeile = { zeit: string; art: string; modell?: string; eingabe: number; cache: number; ausgabe: number; sitzung?: string; quelle?: string; was?: string }
+
+/** Woher eine Nutzung kam: /offen-Befehl, Wahl über der Eingabe, eingang.txt (claude-web), Claudes Block, Claudes Marke. */
+export type Nutzungsquelle = 'befehl' | 'wahl' | 'eingang' | 'block' | 'marke'
+
+/**
+ * Eine Zeile für kosten.jsonl, die zählt, was benutzt wird (ab 0.18.0): welcher Befehl, welche Wahl,
+ * welcher Weg. Keine Tokens. Nach einem halben Jahr zeigt /offen kosten, was wegkann.
+ */
+export const nutzungZeile = (quelle: Nutzungsquelle, was: string, sitzung: string, jetzt: number): string =>
+  JSON.stringify({ zeit: new Date(jetzt).toISOString(), sitzung, art: 'nutzung', quelle, was: was.slice(0, 40), eingabe: 0, cache: 0, ausgabe: 0, version: laufend })
+
+const QUELLE_TITEL: Record<Nutzungsquelle, string> = { befehl: '/offen-Befehle', wahl: 'Wahl über der Eingabe', eingang: 'eingang.txt (claude-web)', block: 'Blöcke von Claude', marke: 'Marken von Claude' }
 
 /** Listenpreis Haiku 4.5 je Million Tokens (USD): Eingabe, Cache-Lesen, Ausgabe. */
 const HAIKU_PREIS = { eingabe: 1, cache: 0.1, ausgabe: 5 }
@@ -52,14 +64,15 @@ export function kostenAuswerten(text: string, jetzt: number, tage = 0): string {
     if (z.trim() === '') continue
     try {
       const r = JSON.parse(z) as Partial<KostenZeile>
-      if (typeof r.art === 'string' && typeof r.eingabe === 'number') zeilen.push({ zeit: String(r.zeit ?? ''), art: r.art, modell: r.modell, eingabe: r.eingabe, cache: r.cache ?? 0, ausgabe: r.ausgabe ?? 0, sitzung: r.sitzung })
+      if (typeof r.art === 'string' && typeof r.eingabe === 'number') zeilen.push({ zeit: String(r.zeit ?? ''), art: r.art, modell: r.modell, eingabe: r.eingabe, cache: r.cache ?? 0, ausgabe: r.ausgabe ?? 0, sitzung: r.sitzung, quelle: r.quelle, was: r.was })
     } catch { /* kaputte Zeile */ }
   }
   const ab = tage > 0 ? new Date(jetzt - tage * 24 * 3600_000).toISOString() : ''
   const gewaehlt = zeilen.filter(z => z.zeit >= ab)
   if (gewaehlt.length === 0) return tage > 0 ? `Keine Kosten in den letzten ${tage} Tagen.` : 'Noch keine Kosten aufgezeichnet (kosten.jsonl fehlt oder ist leer).'
-  const haiku = gewaehlt.filter(z => z.modell !== 'haupt')
+  const haiku = gewaehlt.filter(z => z.modell !== 'haupt' && z.art !== 'nutzung')
   const kontext = gewaehlt.filter(z => z.modell === 'haupt')
+  const nutzung = gewaehlt.filter(z => z.art === 'nutzung')
   const arten = new Map<string, { n: number; eingabe: number; cache: number; ausgabe: number }>()
   for (const z of haiku) {
     const a = arten.get(z.art) ?? { n: 0, eingabe: 0, cache: 0, ausgabe: 0 }
@@ -93,6 +106,15 @@ export function kostenAuswerten(text: string, jetzt: number, tage = 0): string {
     const t = kontext.reduce((s, z) => s + z.eingabe, 0)
     aus.push('', `Kontext fürs Hauptmodell (geschätzt, ab 0.17.3): ${kontext.length} Nachrichten mit Zusatz, ${tausend(t)} Tokens, Ø ${Math.round(t / kontext.length)} je Nachricht.`)
     aus.push('  Das sind Liste, Hinweis und Übergabe, die Claude mitbekommt - beim Hauptmodell rund 15-mal so teuer je Token wie bei Haiku.')
+  }
+  if (nutzung.length > 0) {
+    aus.push('', `Nutzung (ab 0.18.0): ${nutzung.length} Vorgänge.`)
+    for (const q of Object.keys(QUELLE_TITEL) as Nutzungsquelle[]) {
+      const je = new Map<string, number>()
+      for (const z of nutzung.filter(x => x.quelle === q)) je.set(z.was ?? '?', (je.get(z.was ?? '?') ?? 0) + 1)
+      if (je.size === 0) continue
+      aus.push(`  ${QUELLE_TITEL[q]}: ${[...je.entries()].sort((a, b) => b[1] - a[1]).map(([w, n]) => `${w} ${n}`).join(', ')}`)
+    }
   }
   return aus.join('\n')
 }

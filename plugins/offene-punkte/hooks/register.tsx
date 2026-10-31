@@ -30,6 +30,7 @@ import {
   uebergabeAnkuendigen, wiederOeffnen,
 } from './kommandos'
 import { kopf, kurzbefehle, optionenText, wahl } from './oberflaeche'
+import { nutzung } from './dateien'
 
 // Die Zustandsreferenzen stehen in jeder Datei, die sie liest oder schreibt: der Lader der Engine
 // nimmt an read/update nur Referenzen aus derselben Datei (kein Import).
@@ -296,6 +297,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) z.turnLaeuft = false
     const marken = e.agentId === undefined && e.reason === 'answer' ? schlussMarken(e.answer) : []
     if (marken.length > 0) {
+      void nutzung($, 'marke', marken.some(m => m.ueberholt) ? 'ueberholt' : 'erledigt').catch(() => undefined)
       $.clock.after(0, () => {
         void (async () => {
           const jetzt = await $.clock.now()
@@ -332,6 +334,7 @@ export const register: Register = (on, options) => {
     const block = e.agentId === undefined && e.reason === 'answer' ? blockLesen(e.answer) : { neu: [], aenderungen: [] }
     const blockDa = block.neu.length + block.aenderungen.length > 0
     if (blockDa) {
+      void nutzung($, 'block', block.neu.length > 0 ? 'neu' : 'aenderung').catch(() => undefined)
       $.clock.after(0, () => {
         void punkteEintragen($, block.neu, block.aenderungen).catch(fehler => $.ui.log(`offene-punkte: Block (${String(fehler)})`))
       })

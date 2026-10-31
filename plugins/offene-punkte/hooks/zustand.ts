@@ -37,6 +37,8 @@ export const ZEITEN: { wert: string; label: string }[] = [
 ]
 
 export const z = {
+  // Schreibvorgaenge nach kosten.jsonl laufen nacheinander.
+  kostenKette: Promise.resolve() as Promise<void>,
   // Einstellungen, von register gesetzt.
   modell: 'haiku',
   fragenAnzeigen: true,

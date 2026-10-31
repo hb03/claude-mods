@@ -10,8 +10,9 @@ import type { Ruhezeit, Teil } from './logik'
 import {
   ABSCHICKEN_NACH, AKTUELL, ANS_ENDE, BEFEHL, EIGENE, ERKLAEREN, ERLEDIGT, INTERVIEW, KLAEREN, RUHE, SPAETER, VERWERFEN, unterwegs, z,
 } from './zustand'
-import { aendere, sicht } from './dateien'
+import { aendere, nutzung, sicht } from './dateien'
 import { setzeStatus } from './kommandos'
+import { KEINE } from './zustand'
 
 // Die Zustandsreferenzen stehen in jeder Datei, die sie liest oder schreibt: der Lader der Engine
 // nimmt an read/update nur Referenzen aus derselben Datei (kein Import).
@@ -183,7 +184,24 @@ export async function eigeneAntwort($: EngineInterface, punkt: Punkt, text: stri
 }
 
 /** Eine Wahl in der Frage eines Punkts ausfuehren. */
+/** Was gewaehlt wurde, als Wort fuer die Nutzungszaehlung. */
+function wahlArt(wert: string): string {
+  if (wert === EIGENE) return 'eigene'
+  if (wert === ERKLAEREN) return 'erklaeren'
+  if (wert === INTERVIEW) return 'interview'
+  if (wert === KLAEREN) return 'klaeren'
+  if (wert.startsWith(BEFEHL)) return 'befehl'
+  if (wert === SPAETER) return 'spaeter'
+  if (wert === ANS_ENDE) return 'ans-ende'
+  if (wert.startsWith(RUHE)) return `ruhe-${wert.slice(RUHE.length)}`
+  if (wert === ERLEDIGT) return 'erledigt'
+  if (wert === VERWERFEN) return 'verwerfen'
+  if (wert === AKTUELL) return 'aktuell'
+  return 'option'
+}
+
 export async function waehlen($: EngineInterface, punkt: Punkt, wert: string, mitTextfeld: boolean) {
+  if (wert !== KEINE) void nutzung($, 'wahl', wahlArt(wert)).catch(() => undefined)
   if (wert === EIGENE) {
     if (mitTextfeld) {
       await update($, eigeneA, () => punkt.id)

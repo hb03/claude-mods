@@ -8,8 +8,9 @@ import {
   installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, monatsKopf, neuerAlsLaufend, ordnerName, statuszeile, stempeln,
   tagAnhaengen, uebernehmen, verlaufKopf, verlaufsEintraege, zuGeschlossen,
 } from './logik'
-import type { Ablage, Geschlossen, Sicht } from './logik'
+import type { Ablage, Geschlossen, Nutzungsquelle, Sicht } from './logik'
 import { z } from './zustand'
+import { nutzungZeile } from './logik'
 
 // Die Zustandsreferenzen stehen in jeder Datei, die sie liest oder schreibt: der Lader der Engine
 // nimmt an read/update nur Referenzen aus derselben Datei (kein Import).
@@ -271,13 +272,22 @@ export async function versionPruefen($: EngineInterface) {
 }
 
 /** Eine Zeile an kosten.jsonl im Projektordner anhaengen; ab 200 kB bleibt der juengere Teil. */
-export async function kostenSchreiben($: EngineInterface, zeile: string) {
-  const o = await ablageOrt($)
-  if (o === null) return
-  const datei = `${o.ordner}/kosten.jsonl`
-  const alt = await $.fs.read(datei).then(t => String(t)).catch(() => '')
-  const basis = alt.length > 200_000 ? alt.slice(alt.indexOf('\n', alt.length - 150_000) + 1) : alt
-  await $.fs.write(datei, `${basis}${zeile}\n`).catch(() => undefined)
+export function kostenSchreiben($: EngineInterface, zeile: string): Promise<void> {
+  // Nacheinander (Kette): Haiku-Kosten und Nutzung fallen oft zusammen, und Lesen-Anhaengen-Schreiben vertraegt kein Durcheinander.
+  z.kostenKette = z.kostenKette.then(async () => {
+    const o = await ablageOrt($)
+    if (o === null) return
+    const datei = `${o.ordner}/kosten.jsonl`
+    const alt = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    const basis = alt.length > 200_000 ? alt.slice(alt.indexOf('\n', alt.length - 150_000) + 1) : alt
+    await $.fs.write(datei, `${basis}${zeile}\n`).catch(() => undefined)
+  }).catch(() => undefined)
+  return z.kostenKette
+}
+
+/** Zaehlt eine Nutzung (Befehl, Wahl, Eingang, Block, Marke) in kosten.jsonl - /offen kosten zeigt sie. */
+export async function nutzung($: EngineInterface, quelle: Nutzungsquelle, was: string) {
+  await kostenSchreiben($, nutzungZeile(quelle, was, z.sitzung, await $.clock.now()))
 }
 
 /** Liste aendern; was dabei geschlossen oder wieder geoeffnet wird, geht in den Verlauf. Alles landet in der Datei. */

@@ -12,7 +12,7 @@ import type { Auswertung, Gedanke, GedankenDatei, Geschlossen, NrAenderung } fro
 import { AKTUELL, ANS_ENDE, ERLEDIGT, RUHE, VERWERFEN, WARTET, z } from './zustand'
 import { abschicken, antworten, ergebnis, gesammelt, naechsteReihe, senden, waehlen } from './antworten'
 import type { Wahl } from './antworten'
-import { ablageOrt, aendere, lebenszeichen, nachladen, nummernAb, schreiben, sicht, speichern, windowsHost, zeigeStatus } from './dateien'
+import { ablageOrt, aendere, lebenszeichen, mitSperre, nachladen, nummernAb, nutzung, schreiben, sicht, speichern, windowsHost, zeigeStatus } from './dateien'
 import { ueberblickErneuern } from './haiku'
 import { optionenText } from './oberflaeche'
 
@@ -160,7 +160,7 @@ export async function eingangLesen($: EngineInterface) {
     const zeilen = eingangZeilen(text)
     const ergebnisse: string[] = []
     for (const z of zeilen) {
-      const r = await offenKommando($, z).catch(fehler => `Fehler: ${String(fehler)}`)
+      const r = await offenKommando($, z, 'eingang').catch(fehler => `Fehler: ${String(fehler)}`)
       ergebnisse.push(`${z} → ${r ?? 'Liste'}`)
     }
     if (r !== null) await $.process.run(befehlEntfernen([meins], windows)).catch(() => undefined)
@@ -265,7 +265,8 @@ export async function gedankenDatei($: EngineInterface): Promise<{ datei: string
 }
 
 async function gedankenSchreiben($: EngineInterface, datei: string, d: GedankenDatei) {
-  await schreiben($, datei, gedankenText(d))
+  // Unter der Sperre: claude-web schreibt gedanken.md auch und beachtet dieselbe Sperre (0.18.0).
+  await mitSperre($, () => schreiben($, datei, gedankenText(d)))
   await update($, gedankenStandA, n => n + 1)
 }
 
@@ -313,8 +314,9 @@ export async function gedankeTun($: EngineInterface, nr: number, tun: 'senden' |
 }
 
 /** /offen mit Nummer: einen Punkt erledigen, verwerfen, zurueckstellen oder eine Antwort waehlen. */
-export async function offenKommando($: EngineInterface, args: string): Promise<string | null> {
+export async function offenKommando($: EngineInterface, args: string, quelle: 'befehl' | 'eingang' = 'befehl'): Promise<string | null> {
   const k = kommando(args)
+  if (k.art !== 'fehler') void nutzung($, quelle, k.art === 'punkt' ? k.tun : k.art === 'gedanke' ? `gedanke-${k.tun}` : k.art).catch(() => undefined)
   if (k.art === 'liste') return null
   if (k.art === 'fehler') return k.text
   if (k.art === 'senden') {
