@@ -17,8 +17,8 @@
     {
       "name": "offene-punkte",
       "source": "./plugins/offene-punkte",
-      "description": "Mod: führt die offenen Punkte an den Nutzer (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; Claude trägt sie als Block in seiner Antwort ein und schließt Erledigtes selbst, Haiku fasst nur nach, gleicht stündlich ab und schreibt den Überblick aus dem Verlauf. offen.json und eingang.txt als Schnittstelle für claude-web. /offen, /zusammenfassung; /offen übergabe schreibt eine Übergabe ins Archiv, leert den Verlauf und gibt sie der neuen Unterhaltung mit.",
-      "version": "0.17.3",
+      "description": "Mod: führt die offenen Punkte an den Nutzer (Entscheidungen und Aufgaben mit Anleitung) und fragt sie über der Eingabe ab; Claude trägt sie als Block ein und schließt Erledigtes selbst, Haiku fasst nur nach, gleicht stündlich ab und schreibt den Überblick fort. offen.json, eingang.txt und gedanken.md als Schnittstelle für claude-web; mehrere Sitzungen je Projekt schreiben unter einer Sperre. /offen, /offen übergabe, /offen kosten, /zusammenfassung.",
+      "version": "0.18.0",
       "category": "mod"
     },
     {

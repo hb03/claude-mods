@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { HINWEIS_BLOCK, antwortIn, befehle, blockLesen, sammelText } from '../hooks/logik'
+import { HINWEIS_BLOCK, altern, antwortIn, befehle, blockLesen, nachfassen, sammelText } from '../hooks/logik'
 
 const BLOCK = `Alles gebaut.
 
@@ -139,4 +139,43 @@ test('„# #<Nr> Titel“ im Block ändert den bestehenden Punkt statt einen neu
   expect(liste).toContain('Welche Grenze jetzt: 55 oder 100 MB?')
   expect(liste).toContain('b) 100 MB')
   expect(liste).not.toContain('2. ')
+})
+
+describe('Nachfassen ohne Block', () => {
+  test('nachfassen: Frage oder Bitte am Schluss ja, sonst nein', () => {
+    expect(nachfassen('Gebaut und getestet. Soll ich pushen?')).toBe(true)
+    expect(nachfassen('Gebaut. Bitte prüfe die Seite im Browser.')).toBe(true)
+    expect(nachfassen('Gebaut und getestet, alles committet.')).toBe(false)
+    expect(nachfassen('Ok?')).toBe(false)
+  })
+
+  test('altern: ein nicht erwähnter offener Punkt zählt hoch, ein genannter (Nummer oder Titel) nicht', () => {
+    const punkt = (nr: number, titel: string) => ({
+      id: `p${nr}`, nr, titel, art: 'entscheidung', stufe: 'normal', frage: 'F?', info: '', anleitung: '',
+      optionen: [{ label: 'Ja', antwort: 'Ja.' }], status: 'offen', zurueckgestellt: 0, ohneBezug: 0, erstellt: 1,
+    }) as never
+    const r = altern([punkt(1, 'Freigabe Push'), punkt(2, 'Logo einbauen')], 'Zu #1 nichts Neues.', 2)
+    expect(r.map(p => p.ohneBezug)).toEqual([0, 1])
+  })
+
+  test('Frage am Ende ohne Block ruft Haiku einmal, mit Block oder ohne Frage keinmal', async ($, on) => {
+    const uhr = mock.clock(on, { now: 1_800_000_000_000 })
+    grundlage(on)
+    let haiku = 0
+    on('model.complete', () => {
+      haiku++
+      return { value: { isAnswered: true, text: '{"neu":[],"erledigt":[]}' } } as never
+    })
+    const fertig = (answer: string, turnId: string) =>
+      $.turn.complete({ answer, reason: 'answer', durationMs: 1, isAborted: false, turnId } as never)
+    await fertig('Gebaut und getestet, alles committet.', 't1')
+    await uhr.settle()
+    expect(haiku).toBe(0)
+    await fertig(`${BLOCK}\nSoll ich weitermachen?`, 't2')
+    await uhr.settle()
+    expect(haiku).toBe(0)
+    await fertig('Gebaut. Soll ich pushen?', 't3')
+    await uhr.settle()
+    expect(haiku).toBe(1)
+  })
 })

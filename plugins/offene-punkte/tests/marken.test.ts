@@ -3,7 +3,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { Punkt } from '../types'
 import {
-  HINWEIS_BLOCK, HINWEIS_CLAUDE, HINWEIS_WERKZEUG, ablageLesen, ablageText, bitteZu, fragbar, insInterview, interviewNummer, markenHinweis, markenOhneTreffer,
+  HINWEIS_BLOCK, ablageLesen, ablageText, bitteZu, fragbar, insInterview, interviewNummer, markenHinweis, markenOhneTreffer,
   perMarkeSchliessen, ruheVermerk, schlussMarken, zusammenfuehren,
 } from '../hooks/logik'
 
@@ -78,7 +78,7 @@ describe('markenOhneTreffer: geratene Nummern fallen auf', () => {
 })
 
 test('alle Hinweise sagen: Nummern nicht raten, sonst per Titel', () => {
-  for (const h of [HINWEIS_BLOCK, HINWEIS_CLAUDE, HINWEIS_WERKZEUG]) {
+  for (const h of [HINWEIS_BLOCK]) {
     expect(h).toContain('nie raten oder hochzählen')
     expect(h).toContain('„erledigt: Titel“')
   }

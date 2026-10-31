@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
-  MAX_VERLAUF_FORT, NEU_NACH_FORT, UEBERBLICK_FORT, UEBERBLICK_NEU, kommando, kontextZeile, kostenAuswerten, tokensGeschaetzt, ueberblickAnfrage,
+  MAX_VERLAUF_FORT, NEU_NACH_FORT, UEBERBLICK_FORT, UEBERBLICK_NEU, kommando, kontextZeile, kostenAuswerten, nutzungZeile, tokensGeschaetzt, ueberblickAnfrage,
 } from '../hooks/logik'
 import type { Nachricht } from '../hooks/logik'
 
@@ -83,4 +84,79 @@ describe('Kosten', () => {
     expect(kostenAuswerten('', T)).toContain('Noch keine Kosten')
     expect(kostenAuswerten(zeile(20, 'abgleich', 1, 1), T, 7)).toContain('Keine Kosten in den letzten 7 Tagen')
   })
+})
+
+describe('Nutzung zählen (0.18.0)', () => {
+  test('nutzungZeile: art nutzung, Quelle und Was, keine Tokens; Was ist begrenzt', () => {
+    const z = JSON.parse(nutzungZeile('befehl', 'erledigt', 'S', T)) as Record<string, unknown>
+    expect(z).toMatchObject({ art: 'nutzung', quelle: 'befehl', was: 'erledigt', eingabe: 0, ausgabe: 0, sitzung: 'S' })
+    expect((JSON.parse(nutzungZeile('wahl', 'x'.repeat(80), 'S', T)) as { was: string }).was.length).toBe(40)
+  })
+
+  test('kostenAuswerten: Nutzung je Quelle gezählt, nicht in der Haiku-Tabelle', () => {
+    const text = [
+      nutzungZeile('befehl', 'liste', 's1', T - TAG), nutzungZeile('befehl', 'liste', 's1', T - TAG), nutzungZeile('befehl', 'erledigt', 's2', T),
+      nutzungZeile('wahl', 'option', 's1', T), nutzungZeile('eingang', 'antwort', 's3', T), nutzungZeile('block', 'neu', 's1', T), nutzungZeile('marke', 'erledigt', 's1', T),
+      `{"zeit":"${new Date(T).toISOString()}","sitzung":"s1","art":"nachfassen","eingabe":3000,"cache":0,"ausgabe":600}`,
+    ].join('\n')
+    const aus = kostenAuswerten(text, T)
+    expect(aus).toContain('Nutzung (ab 0.18.0): 7 Vorgänge.')
+    expect(aus).toContain('/offen-Befehle: liste 2, erledigt 1')
+    expect(aus).toContain('Wahl über der Eingabe: option 1')
+    expect(aus).toContain('eingang.txt (claude-web): antwort 1')
+    expect(aus).toContain('Blöcke von Claude: neu 1')
+    expect(aus).toContain('Marken von Claude: erledigt 1')
+    expect(aus).toContain('Summe              1')
+    expect(kostenAuswerten(nutzungZeile('befehl', 'liste', 's1', T), T)).not.toContain('Haiku (gemessen)')
+  })
+})
+
+// ---------------------------------------------------------------- Im Betrieb
+
+const pfad = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+const KOSTEN = '/projekt/offene-punkte/kosten.jsonl'
+
+function grundlage(on: On, dateien: Map<string, string>) {
+  on('ui.status', () => ({ value: undefined }) as never)
+  on('ui.log', () => ({ value: undefined }) as never)
+  on('ui.toast', () => ({ value: {} }) as never)
+  on('ui.open', () => ({ value: { isPlaced: false } }) as never)
+  on('command.register', () => ({ value: {} }) as never)
+  on('session.start', (_, e) => ({ cwd: e.cwd }) as never)
+  on('session.root', () => ({ value: '/projekt' }) as never)
+  on('session.id', () => ({ value: 'A' }) as never)
+  on('env.get', () => ({ value: undefined }) as never)
+  on('fs.exists', (_, e) => ({ value: dateien.has(pfad(e.path)) }) as never)
+  on('fs.stat', (_, e) => {
+    if (pfad(e.path) === '/projekt/.git') return { value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false } } as never
+    throw new Error('ENOENT')
+  })
+  on('fs.read', (_, e) => {
+    const t = dateien.get(pfad(e.path))
+    if (t === undefined) throw new Error('ENOENT')
+    return { value: t } as never
+  })
+  on('fs.write', (_, e) => {
+    dateien.set(pfad(e.path), e.text)
+    return { value: undefined } as never
+  })
+  on('fs.list', () => ({ value: [] }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"ergebnisse":[]}' } }) as never)
+}
+
+test('/offen und /erledigt zählen eine Nutzung in kosten.jsonl; /offen kosten zeigt sie', async ($, on) => {
+  const uhr = mock.clock(on, { now: T })
+  const dateien = new Map<string, string>()
+  grundlage(on, dateien)
+  await $.session.start({ cwd: '/projekt', surface: 'terminal', isInteractive: true } as never)
+  await uhr.settle()
+  await $.command.run({ command: 'offen', args: '' } as never)
+  await $.command.run({ command: 'offen', args: '7 erledigt' } as never)
+  await $.command.run({ command: 'erledigt', args: '8' } as never)
+  await uhr.settle()
+  const zeilen = String(dateien.get(KOSTEN) ?? '').trim().split('\n').map(l => JSON.parse(l) as { art: string; quelle?: string; was?: string })
+  expect(zeilen.filter(l => l.art === 'nutzung').map(l => `${l.quelle}:${l.was}`)).toEqual(['befehl:liste', 'befehl:erledigt', 'befehl:erledigt'])
+  const r = await $.command.run({ command: 'offen', args: 'kosten' } as never)
+  expect(String((r as { text?: string }).text)).toContain('/offen-Befehle: erledigt 2, liste 1')
 })

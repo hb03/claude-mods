@@ -452,11 +452,15 @@ const band = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120, scroll: { offset: 0, bodyRows: 19, contentRows: 0 } },
 }
 
-const call = ($: Eng, input: unknown) =>
-  $.tool.call({ tool: 'mcp__offene-punkte__punkte', input } as never) as Promise<{ text?: string; isError?: boolean }>
-
 const fertig = ($: Eng, answer: string) =>
   $.turn.complete({ answer, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't1' } as never)
+
+/** Claudes Antwort mit ```offen-Block aus { neu: [...] }; der Block wird erst nach uhr.settle() ausgewertet. */
+const blockAntwort = (input: { neu: { titel: string; art: string; frage: string; optionen: { label: string }[] }[] }) =>
+  'Eingetragen.\n\n```offen\n' + input.neu.map(p =>
+    `# ${p.titel} | ${p.art}\n${p.frage}\n` + p.optionen.map((o, i) => `${'abcd'[i]}) ${o.label}`).join('\n')).join('\n') + '\n```'
+
+const call = ($: Eng, input: Parameters<typeof blockAntwort>[0]) => fertig($, blockAntwort(input))
 
 const eingabe = ($: Eng, text: string, kind: string) => $.prompt.submit({ text, origin: { kind } } as never)
 
@@ -492,8 +496,8 @@ async function frageZeigt($: Eng, muster: RegExp) {
   return gefunden !== undefined
 }
 
-const FREIGABE = { titel: 'Freigabe Push', art: 'entscheidung', frage: 'Darf ich pushen?', optionen: [{ label: 'Ja, pushen', antwort: 'Ja, push.' }] }
-const LOGO = { titel: 'Logo einbauen', art: 'entscheidung', frage: 'Soll das Logo rein?', optionen: [{ label: 'Ja', antwort: 'Ja, einbauen.' }] }
+const FREIGABE = { titel: 'Freigabe Push', art: 'entscheidung', frage: 'Darf ich pushen?', optionen: [{ label: 'Ja, pushen', antwort: 'Ja, pushen' }] }
+const LOGO = { titel: 'Logo einbauen', art: 'entscheidung', frage: 'Soll das Logo rein?', optionen: [{ label: 'Ja, einbauen', antwort: 'Ja, einbauen' }] }
 const EINS = { neu: [FREIGABE] }
 const ZWEI = { neu: [FREIGABE, LOGO] }
 
@@ -539,7 +543,8 @@ describe('Eingaben von Maschinen', () => {
     gesendet(on)
 
     await call($, ZWEI)
-    // Die Werkzeugnutzung gehört zu dieser Antwort; sie soll unten nicht der Grund für „kein Haiku“ sein.
+
+    await uhr.settle()
     await fertig($, 'Eingetragen.')
     await uhr.settle()
 
@@ -572,6 +577,7 @@ describe('Eingaben von Maschinen', () => {
     const anfragen = haiku(on)
     const texte = gesendet(on)
     await call($, ZWEI)
+    await uhr.settle()
     await fertig($, 'Eingetragen.')
     await uhr.settle()
 
@@ -598,19 +604,7 @@ describe('Sitzung ohne Menschen (claude -p)', () => {
     return zaehler
   }
 
-  // Das Werkzeug gibt es nur im Modus „werkzeug“ (Option eintrag; Standard ist der Block in der Antwort).
-  for (const [isInteractive, erwartet] of [[false, 0], [true, 1]] as const) {
-    test(`Modus werkzeug: session.start mit isInteractive: ${isInteractive} registriert das Werkzeug ${erwartet}-mal`, { options: { eintrag: 'werkzeug' } }, async ($, on) => {
-      const uhr = mock.clock(on, { now: T })
-      grundlage(on, new Map())
-      const werkzeug = werkzeugZaehler(on)
-      await $.session.start({ cwd: '/projekt', surface: isInteractive ? 'terminal' : null, isInteractive } as never)
-      await uhr.settle()
-      expect(werkzeug.n).toBe(erwartet)
-    })
-  }
-
-  test('Standard (eintrag: block): auch mit Menschen kein Werkzeug im Katalog', async ($, on) => {
+  test('auch mit Menschen wird kein Werkzeug registriert', async ($, on) => {
     const uhr = mock.clock(on, { now: T })
     grundlage(on, new Map())
     const werkzeug = werkzeugZaehler(on)
@@ -663,6 +657,7 @@ describe('/offen <Nr> antwort <Text>', () => {
       grundlage(on, dateien, umgebung)
       const texte = gesendet(on)
       await call($, EINS)
+      await uhr.settle()
 
       const r = await befehl($, `1 antwort ${ANTWORT}`)
       await uhr.settle()
@@ -682,6 +677,7 @@ describe('/offen <Nr> antwort <Text>', () => {
     grundlage(on, new Map(), { fuellbar: false })
     const texte = gesendet(on)
     await call($, EINS)
+    await uhr.settle()
     expect(await befehl($, '1 antwort')).toContain('Verwendung')
     expect(await befehl($, '7 antwort Hallo')).toBe('Punkt 7 gibt es nicht – /offen zeigt die Nummern.')
     await uhr.settle()
@@ -696,6 +692,7 @@ describe('/offen alle weg|erledigt', () => {
     const dateien = new Map<string, string>()
     grundlage(on, dateien)
     await call($, ZWEI)
+    await uhr.settle()
 
     expect(await befehl($, 'alle weg Aufgeräumt')).toBe('2 Punkte verworfen.')
     await uhr.settle()
@@ -717,6 +714,7 @@ describe('/offen alle weg|erledigt', () => {
     const dateien = new Map<string, string>()
     grundlage(on, dateien)
     await call($, ZWEI)
+    await uhr.settle()
 
     expect(await befehl($, 'alle erledigt')).toBe('2 Punkte erledigt.')
     await uhr.settle()
@@ -734,6 +732,7 @@ describe('Getippte Antworten', () => {
     grundlage(on, dateien)
     const texte = gesendet(on)
     await call($, EINS)
+    await uhr.settle()
     expect(await frageZeigt($, /Darf ich pushen\?/)).toBe(true)
 
     await eingabe($, `Zum offenen Punkt „${FREIGABE.titel}“: Nimm Variante B`, 'composer')
@@ -750,6 +749,7 @@ describe('Getippte Antworten', () => {
     grundlage(on, dateien)
     gesendet(on)
     await call($, ZWEI)
+    await uhr.settle()
 
     await eingabe($, `Zu den offenen Punkten:\n- „${FREIGABE.titel}“: Ja\n- #2 „Irgendwie anders“: Nein`, 'bridge')
     await uhr.settle()
@@ -764,6 +764,7 @@ describe('Getippte Antworten', () => {
     grundlage(on, dateien)
     on('prompt.submit', () => ({ drop: 'abgelehnt' }) as never)
     await call($, EINS)
+    await uhr.settle()
 
     await eingabe($, `Zum offenen Punkt „${FREIGABE.titel}“: Nimm Variante B`, 'composer')
     await uhr.settle()
@@ -778,6 +779,7 @@ describe('/offen mit Pane', () => {
     const pane = { isPlaced: true }
     grundlage(on, new Map(), { pane })
     await call($, ZWEI)
+    await uhr.settle()
 
     expect(await befehl($, '')).toBe('2 offen – alles im Pane „Offene Punkte“.')
     expect(await befehl($, '2 später morgen')).toContain('ruht bis')
@@ -831,16 +833,6 @@ describe('kosten.jsonl', () => {
       await uhr.settle()
     }
     expect(String(dateien.get(KOSTEN)).trim().split('\n')).toHaveLength(2)
-  })
-
-  test('mit Option auswertung „haiku“ heißt die Art „auswertung“', { options: { auswertung: 'haiku' } }, async ($, on) => {
-    const uhr = mock.clock(on, { now: T })
-    const dateien = new Map<string, string>()
-    grundlage(on, dateien)
-    haiku(on, USAGE)
-    await fertig($, 'Die Seite ist fertig. Soll ich sie ausrollen?')
-    await uhr.settle()
-    expect(String(dateien.get(KOSTEN))).toContain('"art":"auswertung"')
   })
 
   test('ohne usage im Ergebnis entsteht keine Zeile', async ($, on) => {

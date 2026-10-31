@@ -4,7 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import type { Auswertung } from '../hooks/logik'
 import {
-  VERALTET_NACH, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, auswerten, ausnahmeErgaenzen, befehle, kommando, lies,
+  VERALTET_NACH, abschliessen, ablageLesen, antwortIn, ausfuehrBitte, ablageText, anfrage, ausnahmeErgaenzen, befehle, kommando, lies,
   nummerieren, offene, ordnerName, statuszeile, ueberblickAus, verlaufsEintraege, zuruecknehmen, zusammenfuehren,
 } from '../hooks/logik'
 import type { Ausstehend, Punkt } from '../types'
@@ -15,16 +15,6 @@ const punkt = (id: string, extra: Partial<Punkt> = {}): Punkt => ({
   status: 'offen', zurueckgestellt: 0, erstellt: 1, ...extra,
 })
 const leer: Auswertung = { neu: [], aktualisiert: [], erledigt: [], erwaehnt: [], ueberblick: '' }
-
-describe('Kurze Antworten', () => {
-  test('mit Frage oder Bitte werden sie ausgewertet, sonst nicht', async () => {
-    expect(auswerten('Fertig. Soll ich pushen?', 400)).toBe(true)
-    expect(auswerten('Gebaut. Bitte prüfe die Seite im Browser.', 400)).toBe(true)
-    expect(auswerten('Erledigt.', 400)).toBe(false)
-    expect(auswerten('Tests grün, committet.', 400)).toBe(false)
-    expect(auswerten('x'.repeat(400), 400)).toBe(true)
-  })
-})
 
 describe('Warteschlange', () => {
   test('mehrere Antworten gehen in eine Anfrage, jede behält ihren Schluss', async () => {

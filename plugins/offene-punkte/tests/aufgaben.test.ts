@@ -6,20 +6,29 @@ import type { Punkt } from '../types'
 
 const ANTWORT = 'Die Statuszeile ist fertig. Auf dem PC musst du noch den Eintrag in C:/Users/Nutzer/.claude/settings.json ändern. '.repeat(5)
 
-const ANLEITUNG = '1. In `C:/Users/Nutzer/.claude/settings.json` den Eintrag ersetzen:\n```json\n"statusLine": { "refreshInterval": 30 }\n```'
+// Der Block in Claudes Antwort (ohne inneren Zaun, der ihn beenden würde).
+const AUFGABE = `${ANTWORT}
 
-const HAIKU = (ueberblick: string) => JSON.stringify({
-  neu: [{
-    titel: 'Statuszeile auf dem PC',
-    art: 'aufgabe',
-    frage: 'Hast du den Eintrag auf dem PC geändert?',
-    info: 'Ich komme nicht an den PC.',
-    anleitung: ANLEITUNG,
-    optionen: [{ label: 'Erledigt', antwort: 'Habe ich eingetragen.' }, { label: 'Erledige ich selbst', antwort: '' }],
-  }],
-  erledigt: [],
-  ueberblick,
-})
+\`\`\`offen
+# Statuszeile auf dem PC | aufgabe
+Hast du den Eintrag auf dem PC geändert?
+a) Erledigt
+b) Erledige ich selbst
+info: Ich komme nicht an den PC.
+anleitung: 1. In C:/Users/Nutzer/.claude/settings.json den Eintrag ersetzen:
+"statusLine": { "refreshInterval": 30 }
+\`\`\`
+`
+
+const ENTSCHEIDUNG = `${ANTWORT}
+
+\`\`\`offen
+# Ausrollen | entscheidung
+Ausrollen?
+a) Ja
+b) Nein
+\`\`\`
+`
 
 function grundlage(on: On) {
   on('ui.status', () => ({ value: undefined }) as never)
@@ -62,17 +71,10 @@ describe('Lesen', () => {
   })
 })
 
-test('Aufgabe zeigt ihre Anleitung über der Eingabe; der Überblick geht in die nächste Auswertung', { options: { auswertung: 'haiku' } }, async ($, on) => {
+test('Aufgabe aus dem Block zeigt ihre Anleitung über der Eingabe', async ($, on) => {
   const uhr = mock.clock(on, { now: 1_800_000_000_000 })
   grundlage(on)
-  const anfragen: string[] = []
-  const antworten = [HAIKU('- **Ziel:** Statuszeile einrichten'), '{"neu":[],"erledigt":[],"ueberblick":""}']
-  on('model.complete', (_, e) => {
-    anfragen.push(String(e.prompt))
-    return { value: { isAnswered: true, text: antworten.shift() ?? '{}' } } as never
-  })
-
-  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't1' } as never)
+  await $.turn.complete({ answer: AUFGABE, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't1' } as never)
   await uhr.settle()
 
   for (const surface of ['terminal', 'mobile'] as const) {
@@ -83,24 +85,15 @@ test('Aufgabe zeigt ihre Anleitung über der Eingabe; der Überblick geht in die
     await ui.unmount()
   }
 
-  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't2' } as never)
-  await uhr.settle()
-  expect(anfragen.length).toBe(2)
-  expect(anfragen[0]).toContain('BISHERIGER ÜBERBLICK:\n(noch keiner)')
-  expect(anfragen[1]).toContain('BISHERIGER ÜBERBLICK:\n- **Ziel:** Statuszeile einrichten')
-
-  // leerer Überblick in der zweiten Antwort überschreibt den alten nicht
   const offen = await $.command.run({ command: 'offen', args: '' } as never)
-  expect(String((offen as { text?: string }).text)).toContain('Überblick:\n- **Ziel:** Statuszeile einrichten')
   expect(String((offen as { text?: string }).text)).toContain('Zu tun: Statuszeile auf dem PC')
   expect(String((offen as { text?: string }).text)).toContain('refreshInterval')
 })
 
-test('Entscheidung ohne Anleitung zeigt keinen Markdown-Block', { options: { auswertung: 'haiku' } }, async ($, on) => {
+test('Entscheidung ohne Anleitung zeigt keinen Markdown-Block', async ($, on) => {
   const uhr = mock.clock(on)
   grundlage(on)
-  on('model.complete', () => ({ value: { isAnswered: true, text: JSON.stringify({ neu: [{ titel: 'Ausrollen', art: 'entscheidung', frage: 'Ausrollen?', optionen: [{ label: 'Ja', antwort: 'Ja.' }] }], erledigt: [] }) } }) as never)
-  await $.turn.complete({ answer: ANTWORT, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't1' } as never)
+  await $.turn.complete({ answer: ENTSCHEIDUNG, reason: 'answer', durationMs: 1000, isAborted: false, turnId: 't1' } as never)
   await uhr.settle()
   const ui = await $.ui.mount({ ...band, surface: 'terminal' } as never)
   expect(await ui.find({ type: 'Text', text: /◆ Offen/ })).toBeDefined()
