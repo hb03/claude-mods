@@ -17,8 +17,9 @@ import {
   gedankeBitte, gedankeKurz, gedankeZustand, gedankenLesen, gedankenMarken, gedankenPruefBitte, gedankenText, naechsteGedankenNr, zeitText,
   installierteVersion, laufendeVersion, laufendeVersionSetzen, manifestVersion, neuerAlsLaufend,
   UEBERGABE, indexZeile, ueberblickKontext, uebergabeDateien, uebergabeIndex, uebergabeKontext, uebergabeName, uebergabeText,
+  LEBT_MS, SPERRE_ALT_MS, abgleichFaellig, alteReste, befehlEntfernen, befehlFreigeben, befehlSperren, befehlVerschieben, geschlossenFuehren, zuGeschlossen,
 } from './logik'
-import type { Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
+import type { Ablage, Geschlossen, Auswertung, Gedanke, GedankenDatei, Marke, Nachricht, NrAenderung, Ruhezeit, Sicht, Teil } from './logik'
 
 // Offene Punkte der Sitzung: nach jeder Antwort liest ein kleines Modell
 // (Haiku), was noch eine Entscheidung, Freigabe oder Zuarbeit des Nutzers
@@ -41,6 +42,7 @@ const spaeterA = atom({ plugin: 'offene-punkte', key: 'spaeter' } as const, '')
 const warnungenAusA = atom({ plugin: 'offene-punkte', key: 'warnungenAus' } as const, [])
 const abschickenA = atom({ plugin: 'offene-punkte', key: 'abschicken' } as const, { sekunden: 0, inEingabe: false })
 const gedankenStandA = atom({ plugin: 'offene-punkte', key: 'gedankenStand' } as const, 0)
+const geschlossenA = atom({ plugin: 'offene-punkte', key: 'geschlossen' } as const, {} as Geschlossen)
 // Gehoert kontext-anzeige (ab 0.4.0) und wird hier nur gelesen; ohne den Mod bleibt es leer.
 const warnungenA = atom({ plugin: 'kontext-anzeige', key: 'warnungen' } as const, [] as Warnung[])
 
@@ -128,6 +130,12 @@ let installiert = ''
 // Neue Unterhaltung (Start ohne Verlauf, /clear), deren erste Nachricht noch aussteht: sie bekommt die
 // wartende Uebergabe oder den Ueberblick der letzten Sitzung mit.
 let frisch = false
+// Aenderungszeit von offen.md, als diese Sitzung sie zuletzt gelesen oder geschrieben hat: aendert sie
+// sich, hat eine andere Sitzung geschrieben, und der Stand wird nachgeladen (ohne selbst zu schreiben).
+let dateiStand = 0
+let istWindows: Promise<boolean> | null = null
+// Wann diese Sitzung zuletzt ihr Lebenszeichen (.sitzungen/<id>) geschrieben hat.
+let lebtGeschrieben = 0
 // In uebergaben/: der Name der Uebergabe, die die naechste neue Unterhaltung bekommt (leer: keine).
 const WARTET = 'wartet.txt'
 
@@ -186,57 +194,180 @@ function ablageOrt($: EngineInterface) {
   return ort
 }
 
+const windowsHost = ($: EngineInterface) =>
+  (istWindows ??= $.env.get('OS').then(os => os === 'Windows_NT').catch(() => false))
+
+const schlafen = ($: EngineInterface, ms: number) => new Promise<void>(fertig => { $.clock.after(ms, () => fertig()) })
+
+/**
+ * Nur eine Sitzung zugleich liest, gleicht ab und schreibt im Ablageordner: sonst gewinnt, wer zuletzt
+ * schreibt, und das Schliessen der anderen ging verloren. Die Sperre ist ein Ordner (.sperre) - mkdir
+ * gelingt genau einer. Eine Sperre aelter als SPERRE_ALT_MS ist verwaist und wird aufgehoben. Ohne
+ * Prozesse (Test, Rechte) oder nach rund drei Sekunden Warten geht es ohne Sperre weiter.
+ */
+async function mitSperre<T>($: EngineInterface, fn: () => Promise<T>): Promise<T> {
+  const o = await ablageOrt($)
+  if (o === null || !(await $.fs.exists(o.ordner).catch(() => false))) return fn()
+  const pfad = `${o.ordner}/.sperre`
+  const windows = await windowsHost($)
+  let gesperrt = false
+  for (let versuch = 0; versuch < 30; versuch++) {
+    const r = await $.process.run(befehlSperren(pfad, windows)).catch(() => null)
+    if (r === null) break
+    if (r.exitCode === 0) {
+      gesperrt = true
+      break
+    }
+    const st = await $.fs.stat(pfad).catch(() => undefined)
+    if (st === undefined) continue
+    if ((await $.clock.now()) - st.mtimeMs > SPERRE_ALT_MS) {
+      await $.process.run(befehlFreigeben(pfad, windows)).catch(() => undefined)
+      continue
+    }
+    await schlafen($, 100)
+  }
+  if (!gesperrt) $.ui.log('offene-punkte: ohne Sperre geschrieben')
+  try {
+    return await fn()
+  } finally {
+    if (gesperrt) await $.process.run(befehlFreigeben(pfad, windows)).catch(() => undefined)
+  }
+}
+
 /**
  * Schreibt eine Datei in einem Zug: erst daneben, dann an ihren Platz - wer sie gerade liest
- * (claude-web, eine zweite Sitzung), sieht nie einen halben Stand. Klappt das Verschieben nicht
- * (kein mv, Rechte), wird direkt geschrieben.
+ * (claude-web, eine aeltere Sitzung ohne Sperre), sieht nie einen halben Stand. Haelt ein Leser oder
+ * der Virenscanner die Datei kurz fest, scheitert das Verschieben unter Windows: dann noch zweimal
+ * versuchen, sonst direkt schreiben und die .tmp wegraeumen (bis 0.17.1 blieb sie liegen).
  */
 async function schreiben($: EngineInterface, datei: string, text: string) {
   const tmp = `${datei}.${(sitzung || 'neu').slice(0, 8)}.tmp`
-  const windows = (await $.env.get('OS').catch(() => undefined)) === 'Windows_NT'
-  const ok = await $.fs.write(tmp, text)
-    .then(() => $.process.run(windows
-      ? ['cmd', '/c', 'move', '/y', tmp.replace(/\//g, '\\'), datei.replace(/\//g, '\\')]
-      : ['mv', '-f', tmp, datei]))
-    .then(r => r.exitCode === 0)
-    .catch(() => false)
-  if (!ok) await $.fs.write(datei, text)
+  const windows = await windowsHost($)
+  if (!(await $.fs.write(tmp, text).then(() => true).catch(() => false))) return $.fs.write(datei, text)
+  for (let versuch = 0; versuch < 3; versuch++) {
+    if (versuch > 0) await schlafen($, 150 * versuch)
+    const r = await $.process.run(befehlVerschieben(tmp, datei, windows)).catch(() => null)
+    if (r === null) break
+    if (r.exitCode === 0) return
+  }
+  await $.fs.write(datei, text)
+  await $.process.run(befehlEntfernen([tmp], windows)).catch(() => undefined)
+}
+
+/** Was in der Datei steht, in die eigene Liste fuehren - mit den Grabsteinen von dort und von hier. */
+async function dateiFuehren($: EngineInterface, dort: Ablage) {
+  const [eigene, jetzt] = await Promise.all([read($, punkteA), $.clock.now()])
+  const geschlossen = geschlossenFuehren(eigene, jetzt, await read($, geschlossenA), dort.geschlossen)
+  await update($, geschlossenA, () => geschlossen)
+  await zaehlerHeben($, Math.max(dort.hoechsteNr ?? 0, hoechsteNr(dort.punkte)))
+  const ab = Math.max(await read($, hoechsteA), hoechsteNr(eigene))
+  await update($, punkteA, alt => abgleichen(alt, dort.punkte, ab, geschlossen))
+}
+
+async function dateiStandMerken($: EngineInterface, datei: string) {
+  dateiStand = await $.fs.stat(datei).then(st => st.mtimeMs).catch(() => 0)
 }
 
 /**
- * Schreibt offen.md und offen.json. Vorher wird eingelesen, was dort steht: eine andere Sitzung im
- * selben Projekt kann inzwischen Punkte angelegt oder geschlossen haben (mitAbgleich: false beim Leeren).
+ * Schreibt offen.md und offen.json (und neue Zeilen im Tagesverlauf) unter der Sperre. Vorher wird
+ * eingelesen, was dort steht: eine andere Sitzung im selben Projekt kann inzwischen Punkte angelegt oder
+ * geschlossen haben (mitAbgleich: false beim Leeren).
  */
-async function speichern($: EngineInterface, mitAbgleich = true) {
+async function speichern($: EngineInterface, mitAbgleich = true, verlauf: string[] = []) {
   const o = await ablageOrt($)
   if (o === null) return
   const datei = `${o.ordner}/offen.md`
-  if (mitAbgleich) {
-    const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
-    const dort = text === '' ? null : ablageLesen(text)
-    if (dort !== null) {
-      await zaehlerHeben($, dort.hoechsteNr ?? 0)
-      const ab = await nummernAb($)
-      await update($, punkteA, alt => abgleichen(alt, dort.punkte, ab))
+  await mitSperre($, async () => {
+    const jetzt = await $.clock.now()
+    if (verlauf.length > 0) {
+      const vd = `${o.ordner}/antworten-${datum(jetzt)}.md`
+      const alt = await $.fs.read(vd).then(t => String(t)).catch(() => verlaufKopf(jetzt))
+      // Unter der Sperre direkt: hier schreibt niemand dazwischen.
+      await $.fs.write(vd, `${alt}\n${verlauf.join('\n')}`)
+        .catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht geschrieben (${String(fehler)})`))
     }
-  }
-  await zaehlerHeben($, hoechsteNr(await read($, punkteA)))
-  const [punkte, ueberblick, h, jetzt] = await Promise.all([read($, punkteA), read($, ueberblickA), read($, hoechsteA), $.clock.now()])
-  const daten = { punkte, ueberblick, hoechsteNr: h }
-  await schreiben($, datei, ablageText(daten, jetzt))
-    .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`))
-  // Dieselben Daten als reine JSON-Datei fuer claude-web; der Block in offen.md bleibt fuer aeltere Sitzungen.
-  await schreiben($, `${o.ordner}/offen.json`, `${ablageDaten(daten, jetzt, installiert)}\n`)
-    .catch(fehler => $.ui.log(`offene-punkte: offen.json nicht geschrieben (${String(fehler)})`))
+    if (mitAbgleich) {
+      const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+      const dort = text === '' ? null : ablageLesen(text)
+      if (dort !== null) await dateiFuehren($, dort)
+    }
+    const liste = await read($, punkteA)
+    await zaehlerHeben($, hoechsteNr(liste))
+    const geschlossen = geschlossenFuehren(liste, jetzt, await read($, geschlossenA))
+    await update($, geschlossenA, () => geschlossen)
+    const [punkte, ueberblick, h] = await Promise.all([read($, punkteA), read($, ueberblickA), read($, hoechsteA)])
+    const daten = { punkte, ueberblick, hoechsteNr: h, geschlossen }
+    await Promise.all([
+      schreiben($, datei, ablageText(daten, jetzt))
+        .catch(fehler => $.ui.log(`offene-punkte: offen.md nicht geschrieben (${String(fehler)})`)),
+      // Dieselben Daten als reine JSON-Datei fuer claude-web; der Block in offen.md bleibt fuer aeltere Sitzungen.
+      schreiben($, `${o.ordner}/offen.json`, `${ablageDaten(daten, jetzt, installiert)}\n`)
+        .catch(fehler => $.ui.log(`offene-punkte: offen.json nicht geschrieben (${String(fehler)})`)),
+    ])
+    await dateiStandMerken($, datei)
+  })
 }
 
-async function insVerlauf($: EngineInterface, eintraege: string[], jetzt: number) {
+/**
+ * Hat eine andere Sitzung offen.md geschrieben (Aenderungszeit), kommt ihr Stand jetzt schon herein -
+ * nicht erst, wenn diese Sitzung selbst schreibt. Sonst fragte sie weiter, was dort laengst beantwortet
+ * ist. Liest nur (kein Schreiben, kein Pingpong); kostet ohne Aenderung einen stat.
+ */
+async function nachladen($: EngineInterface) {
   const o = await ablageOrt($)
-  if (o === null || eintraege.length === 0) return
-  const datei = `${o.ordner}/antworten-${datum(jetzt)}.md`
-  const alt = await $.fs.read(datei).then(t => String(t)).catch(() => verlaufKopf(jetzt))
-  await schreiben($, datei, `${alt}\n${eintraege.join('\n')}`)
-    .catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht geschrieben (${String(fehler)})`))
+  if (o === null) return
+  const datei = `${o.ordner}/offen.md`
+  const st = await $.fs.stat(datei).catch(() => undefined)
+  if (st === undefined || st.mtimeMs === dateiStand) return
+  const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+  const dort = text === '' ? null : ablageLesen(text)
+  // Halb gelesen (eine aeltere Sitzung schreibt ohne Sperre): beim naechsten Mal wieder.
+  if (dort === null) return
+  dateiStand = st.mtimeMs
+  await dateiFuehren($, dort)
+  await zeigeStatus($)
+}
+
+/**
+ * Lebenszeichen: .sitzungen/<id> im Ablageordner, hoechstens einmal je Minute aus dem Eingangstakt
+ * geschrieben. Wer startet, uebernimmt nur Punkte von Sitzungen ohne frisches Zeichen.
+ */
+async function lebenszeichen($: EngineInterface) {
+  const jetzt = await $.clock.now()
+  if (sitzung === '' || jetzt - lebtGeschrieben < 60_000) return
+  const o = await ablageOrt($)
+  if (o === null) return
+  lebtGeschrieben = jetzt
+  await $.fs.write(`${o.ordner}/.sitzungen/${sitzung}`, `${jetzt}\n`).catch(() => undefined)
+}
+
+/** Beendet (Ende, /clear): das Zeichen weg, damit die naechste Sitzung die Punkte gleich uebernimmt. */
+async function lebenszeichenWeg($: EngineInterface, id: string) {
+  const o = await ablageOrt($)
+  if (o === null || id === '') return
+  lebtGeschrieben = 0
+  await $.process.run(befehlEntfernen([`${o.ordner}/.sitzungen/${id}`], await windowsHost($))).catch(() => undefined)
+}
+
+/** Die anderen Sitzungen im Projekt, die gerade laufen. */
+async function lebende($: EngineInterface): Promise<Set<string>> {
+  const o = await ablageOrt($)
+  if (o === null) return new Set()
+  const [l, jetzt] = await Promise.all([$.fs.list(`${o.ordner}/.sitzungen`).catch(() => []), $.clock.now()])
+  return new Set(l.filter(e => e.kind === 'file' && e.name !== sitzung && jetzt - e.mtimeMs < LEBT_MS).map(e => e.name))
+}
+
+/** Zum Start: Reste gescheiterter Schreibvorgaenge (*.tmp, aelter als zehn Minuten) und alte Lebenszeichen wegraeumen. */
+async function resteAufraeumen($: EngineInterface) {
+  const o = await ablageOrt($)
+  if (o === null) return
+  const jetzt = await $.clock.now()
+  const reste = alteReste(await $.fs.list(o.ordner).catch(() => []), jetzt).map(n => `${o.ordner}/${n}`)
+  const zeichen = (await $.fs.list(`${o.ordner}/.sitzungen`).catch(() => []))
+    .filter(e => e.kind === 'file' && e.mtimeMs > 0 && jetzt - e.mtimeMs > 24 * 3600_000).map(e => `${o.ordner}/.sitzungen/${e.name}`)
+  if (reste.length + zeichen.length === 0) return
+  await $.process.run(befehlEntfernen([...reste, ...zeichen], await windowsHost($)))
+  $.ui.log(`offene-punkte: ${reste.length} alte .tmp und ${zeichen.length} alte Lebenszeichen entfernt`)
 }
 
 /**
@@ -297,8 +428,9 @@ async function aendere($: EngineInterface, fn: (liste: Punkt[]) => Punkt[]): Pro
   await update($, punkteA, alt => stempeln(alt, fn(alt), jetzt))
   const nachher = await read($, punkteA)
   const alt = new Map(vorher.map(p => [p.id, p]))
-  await insVerlauf($, verlaufsEintraege(vorher, nachher, jetzt), jetzt)
-  await speichern($)
+  // Auch was fn gleich wieder aus der Liste genommen hat: sein Grabstein entsteht hier.
+  await update($, geschlossenA, g => geschlossenFuehren([...vorher, ...nachher].filter(p => p.status !== 'offen'), jetzt, g))
+  await speichern($, true, verlaufsEintraege(vorher, nachher, jetzt))
   await zeigeStatus($)
   // Was gerade geschlossen wurde, damit der Aufrufer davon erzaehlen kann.
   return nachher.filter(p => p.status !== 'offen' && alt.get(p.id)?.status === 'offen')
@@ -314,8 +446,13 @@ async function laden($: EngineInterface) {
   const a = text === '' ? null : ablageLesen(text)
   if (a === null) return
   await zaehlerHeben($, a.hoechsteNr ?? 0)
-  // Was die letzte Sitzung offen liess, fuehrt jetzt diese.
-  await update($, punkteA, () => uebernehmen(a.punkte, sitzung))
+  const jetzt = await $.clock.now()
+  const geschlossen = geschlossenFuehren(a.punkte, jetzt, await read($, geschlossenA), a.geschlossen)
+  await update($, geschlossenA, () => geschlossen)
+  dateiStand = await $.fs.stat(`${o.ordner}/offen.md`).then(st => st.mtimeMs).catch(() => 0)
+  // Was die letzte Sitzung offen liess, fuehrt jetzt diese - nicht aber, was eine laufende Sitzung fuehrt.
+  const lebend = await lebende($)
+  await update($, punkteA, () => uebernehmen(zuGeschlossen(a.punkte, geschlossen), sitzung, undefined, lebend))
   await update($, ueberblickA, () => a.ueberblick)
   await zeigeStatus($)
   const n = fragbar(await read($, punkteA), await sicht($)).length
@@ -333,12 +470,18 @@ async function abgleich($: EngineInterface, anlass: 'start' | 'takt') {
   if (abgleichLaeuft || turnLaeuft) return
   abgleichLaeuft = true
   try {
+    await nachladen($)
     const jetzt = await $.clock.now()
     // Was schon lange keine Rolle mehr spielt (auch aus aelteren Fassungen), schliesst sich ohne Frage.
     const veraltet = await aendere($, l => veraltetSchliessen(l, jetzt))
     if (veraltet.length > 0) $.ui.toast(`🤖 ${veraltet.length === 1 ? '1 veralteter Punkt' : `${veraltet.length} veraltete Punkte`} geschlossen · /offen zum Wiederöffnen`, { timeoutMs: 6000 })
     const kandidaten = abgleichKandidaten(await read($, punkteA), jetzt)
     if (kandidaten.length === 0) return
+    // Den Abgleich braucht das Projekt einmal je Takt, nicht einmal je Sitzung: wer ihn macht, traegt sich ein.
+    if (!(await abgleichUebernehmen($, jetzt))) {
+      $.ui.log(`offene-punkte: Abgleich (${anlass}) übersprungen - eine andere Sitzung hat ihn eben gemacht`)
+      return
+    }
     const seit = Math.floor(Math.min(...kandidaten.map(p => p.erstellt)) / 1000)
     const wurzel = (await $.session.root()).replace(/[\\/]+$/, '')
     const log = await $.process.run(['git', '-C', wurzel, 'log', `--since=@${seit}`, '-n', '80', '--date=format:%d.%m. %H:%M', '--format=%h %ad %s'])
@@ -367,6 +510,18 @@ async function abgleich($: EngineInterface, anlass: 'start' | 'takt') {
   } finally {
     abgleichLaeuft = false
   }
+}
+
+/** abgleich.txt unter der Sperre: faellig, dann gehoert der Abgleich dieser Sitzung. */
+async function abgleichUebernehmen($: EngineInterface, jetzt: number): Promise<boolean> {
+  const o = await ablageOrt($)
+  if (o === null) return true
+  const datei = `${o.ordner}/abgleich.txt`
+  return mitSperre($, async () => {
+    if (!abgleichFaellig(await $.fs.read(datei).then(t => String(t)).catch(() => ''), jetzt)) return false
+    await $.fs.write(datei, `${jetzt} ${sitzung}\n`).catch(() => undefined)
+    return true
+  })
 }
 
 /** Der naechste Takt des Abgleichs - als Kette von after statt every, damit ein Neuladen ihn sauber beendet. */
@@ -541,17 +696,29 @@ async function eingangLesen($: EngineInterface) {
     const o = await ablageOrt($)
     if (o === null) return
     const datei = `${o.ordner}/eingang.txt`
-    const text = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    const gelesen = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+    if (eingangZeilen(gelesen).length === 0) return
+    // Mehrere Sitzungen im Projekt lesen dieselbe Datei: wer sie zuerst beiseite schiebt, fuehrt sie aus -
+    // sonst ging jeder Befehl einmal je Sitzung durch. Was claude-web danach anhaengt, legt eine neue an.
+    const windows = await windowsHost($)
+    const meins = `${datei}.${(sitzung || 'neu').slice(0, 8)}.tmp`
+    const r = await $.process.run(befehlVerschieben(datei, meins, windows)).catch(() => null)
+    if (r !== null && r.exitCode !== 0) return
+    const text = r === null ? gelesen : await $.fs.read(meins).then(t => String(t)).catch(() => '')
     const zeilen = eingangZeilen(text)
-    if (zeilen.length === 0) return
     const ergebnisse: string[] = []
     for (const z of zeilen) {
       const r = await offenKommando($, z).catch(fehler => `Fehler: ${String(fehler)}`)
       ergebnisse.push(`${z} → ${r ?? 'Liste'}`)
     }
-    const danach = await $.fs.read(datei).then(t => String(t)).catch(() => '')
-    await $.fs.write(datei, danach.startsWith(text) ? danach.slice(text.length) : danach)
-      .catch(fehler => $.ui.log(`offene-punkte: eingang.txt nicht geleert (${String(fehler)})`))
+    if (r !== null) await $.process.run(befehlEntfernen([meins], windows)).catch(() => undefined)
+    else {
+      // Ohne Prozesse wie bis 0.17.1: das Ausgefuehrte aus der Datei nehmen, Neues bleibt stehen.
+      const danach = await $.fs.read(datei).then(t => String(t)).catch(() => '')
+      await $.fs.write(datei, danach.startsWith(text) ? danach.slice(text.length) : danach)
+        .catch(fehler => $.ui.log(`offene-punkte: eingang.txt nicht geleert (${String(fehler)})`))
+    }
+    if (zeilen.length === 0) return
     $.ui.log(`offene-punkte: Eingang: ${ergebnisse.join(' · ')}`)
     $.ui.toast(`Eingang: ${zeilen.length === 1 ? '1 Befehl' : `${zeilen.length} Befehle`} ausgeführt · /offen`, { timeoutMs: 5000 })
   } finally {
@@ -564,6 +731,8 @@ function eingangPlanen($: EngineInterface, takt = EINGANG_RUHE_MS) {
   eingangTakt = $.clock.after(takt, () => {
     void eingangLesen($)
       .catch(fehler => $.ui.log(`offene-punkte: Eingang (${String(fehler)})`))
+      .then(() => Promise.all([nachladen($), lebenszeichen($)]))
+      .catch(fehler => $.ui.log(`offene-punkte: Nachladen (${String(fehler)})`))
       .then(() => $.clock.now())
       .then(jetzt => eingangPlanen($, turnLaeuft || jetzt - letzterMensch < EINGANG_WACH_MS ? EINGANG_TAKT_MS : EINGANG_RUHE_MS))
       .catch(() => eingangPlanen($))
@@ -1171,6 +1340,10 @@ async function offenKommando($: EngineInterface, args: string): Promise<string |
   if (k.art === 'leeren') {
     zeitgeber?.cancel()
     zeitgeber = null
+    // Grabsteine fuer alles, was offen war: sonst schriebe eine andere Sitzung die Punkte gleich wieder auf.
+    const jetzt = await $.clock.now()
+    const weg = (await read($, punkteA)).map(p => (p.status === 'offen' ? { ...p, status: 'verworfen' as const, ergebnis: 'Liste geleert', geaendert: jetzt } : p))
+    await update($, geschlossenA, g => geschlossenFuehren(weg, jetzt, g))
     await update($, punkteA, () => [])
     await update($, ueberblickA, () => '')
     await speichern($, false)
@@ -1344,6 +1517,9 @@ export const register: Register = (on, options) => {
   letzterMensch = 0
   installiert = ''
   frisch = false
+  dateiStand = 0
+  istWindows = null
+  lebtGeschrieben = 0
 
   on('session.start', async ($, e, next) => {
     // Ohne Menschen davor (claude -p, SDK) bleibt der Mod still: kein Werkzeug, kein Hinweis, kein Haiku -
@@ -1368,6 +1544,7 @@ export const register: Register = (on, options) => {
     await update($, prueftA, () => false)
     sitzung = await $.session.id().catch(() => '')
     await versionPruefen($).catch(() => undefined)
+    if (interaktiv) await lebenszeichen($).catch(() => undefined)
     await laden($).catch(fehler => $.ui.log(`offene-punkte: Laden fehlgeschlagen (${String(fehler)})`))
     // Neu ist die Unterhaltung nur ohne Verlauf: ein Neuladen des Mods mitten in der Sitzung oder
     // --continue bekommen keine Uebergabe (die alte Unterhaltung kennt ihren Stand ja).
@@ -1378,6 +1555,7 @@ export const register: Register = (on, options) => {
     }
     $.clock.after(0, () => {
       void verlaufAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Verlauf nicht aufgeräumt (${String(fehler)})`))
+      void resteAufraeumen($).catch(fehler => $.ui.log(`offene-punkte: Reste nicht aufgeräumt (${String(fehler)})`))
     })
     await zaehlerLaden($).catch(fehler => $.ui.log(`offene-punkte: Zaehler nicht gelesen (${String(fehler)})`))
     // Punkte aus 0.5.0 haben noch keine Nummer.
@@ -1418,6 +1596,7 @@ export const register: Register = (on, options) => {
   // Nach /clear startet keine neue Sitzung im Sinne von session.start: dort die Datei nachladen.
   on('session.end', async ($, e, next) => {
     const r = await next(e)
+    if (e.reason !== 'clear') await lebenszeichenWeg($, sitzung).catch(() => undefined)
     if (e.reason === 'clear') {
       ort = null
       claudeKennt = ''
@@ -1436,6 +1615,7 @@ export const register: Register = (on, options) => {
           // Neue Unterhaltung, neue Sitzungs-ID: die eigenen Punkte gehen mit.
           const alt = sitzung
           sitzung = await $.session.id().catch(() => alt)
+          if (sitzung !== alt) await lebenszeichenWeg($, alt).then(() => lebenszeichen($)).catch(() => undefined)
           await aendere($, l => uebernehmen(zuruecknehmen(l), sitzung, alt))
           await laden($)
           if (interaktiv) {
@@ -1454,6 +1634,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     eingangZeit = await $.clock.now()
+    // Ein stat: hat eine andere Sitzung inzwischen geschlossen, bekommt Claude die Liste ohne diese Punkte.
+    if (interaktiv) await nachladen($).catch(() => undefined)
     const punkte = await read($, punkteA).catch((): Punkt[] => [])
     // Die offenen Punkte gehen still mit, wenn sie sich geaendert haben (und nach einer Compaction):
     // Claude kennt den ganzen Verlauf und schliesst, was schon erledigt oder hinfaellig ist. Auch zu

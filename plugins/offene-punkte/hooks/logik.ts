@@ -1,4 +1,4 @@
-import type { Art, Option, Punkt, Ruhe, Stufe, Warnung } from '../types'
+import type { Art, Grabstein, Option, Punkt, Ruhe, Stufe, Warnung } from '../types'
 
 /** Höchstens so viele offene Punkte führt der Mod; ältere fallen hinten weg. */
 export const MAX_PUNKTE = 30
@@ -12,7 +12,7 @@ export const ANGEBOT_VERFALL = 4
  * Rückfall, wenn die eigene plugin.json nicht lesbar ist; sonst gilt, was beim Start aus ihr gelesen
  * wurde (laufendeVersionSetzen). Steht in offen.md/offen.json, damit claude-web sieht, welche Fassung schreibt.
  */
-export const VERSION = '0.17.0'
+export const VERSION = '0.17.2'
 let laufend = VERSION
 /** Die Fassung, die gerade läuft: aus der plugin.json im geladenen Ordner, sonst VERSION. */
 export const laufendeVersion = (): string => laufend
@@ -575,7 +575,9 @@ export function begrenzen(liste: readonly Punkt[]): Punkt[] {
   const offen = liste.filter(p => p.status === 'offen')
   const rest = liste.filter(p => p.status !== 'offen')
 
-  return [...offen.slice(-MAX_PUNKTE), ...rest.slice(-Math.max(0, MAX_PUNKTE - offen.length))]
+  // slice(-0) wäre die ganze Liste: ab MAX_PUNKTE offenen bleibt kein Erledigtes stehen.
+  const platz = Math.max(0, MAX_PUNKTE - offen.length)
+  return [...offen.slice(-MAX_PUNKTE), ...(platz > 0 ? rest.slice(-platz) : [])]
 }
 
 export const istVeraltet = (p: Punkt): boolean => (p.ohneBezug ?? 0) >= VERALTET_NACH
@@ -1138,17 +1140,73 @@ export function stempeln(vorher: readonly Punkt[], nachher: readonly Punkt[], je
   })
 }
 
+export type Geschlossen = Record<string, Grabstein>
+
+/** So lange bleibt ein Grabstein stehen; länger läuft keine Sitzung, die den Punkt noch offen kennt. */
+export const GESCHLOSSEN_HALTEN_MS = 14 * 24 * 3600_000
+
+/** Der Grabstein, wenn der offene Punkt danach geschlossen wurde (nicht, wenn er danach wieder geöffnet wurde). */
+const begraben = (p: Punkt, geschlossen: Geschlossen): Grabstein | undefined => {
+  const g = geschlossen[p.id]
+  return g !== undefined && g.zeit > (p.geaendert ?? 0) ? g : undefined
+}
+
+/** Offene Punkte, die laut Grabstein später geschlossen wurden, schließen. */
+export function zuGeschlossen(liste: readonly Punkt[], geschlossen: Geschlossen): Punkt[] {
+  return liste.map(p => {
+    const g = p.status === 'offen' ? begraben(p, geschlossen) : undefined
+    if (g === undefined) return p
+    const { ausstehend: _a, ruht: _r, ...rest } = p
+    return { ...rest, status: g.status, geaendert: g.zeit, ergebnis: g.ergebnis ?? 'in einer anderen Sitzung geschlossen' }
+  })
+}
+
+/**
+ * Die Grabsteine fortschreiben: die neueren aus allen Quellen, dazu jeder geschlossene Punkt der Liste;
+ * ein Punkt, der danach wieder geöffnet wurde, verliert seinen. Was älter als GESCHLOSSEN_HALTEN_MS ist, fällt weg.
+ */
+export function geschlossenFuehren(punkte: readonly Punkt[], jetzt: number, ...quellen: readonly (Geschlossen | undefined)[]): Geschlossen {
+  const aus: Geschlossen = {}
+  const nehmen = (id: string, g: Grabstein) => {
+    if (jetzt - g.zeit < GESCHLOSSEN_HALTEN_MS && (aus[id]?.zeit ?? -1) < g.zeit) aus[id] = g
+  }
+  for (const q of quellen) for (const [id, g] of Object.entries(q ?? {})) nehmen(id, g)
+  for (const p of punkte) {
+    if (p.status === 'offen') {
+      if ((p.geaendert ?? 0) >= (aus[p.id]?.zeit ?? Infinity)) delete aus[p.id]
+      continue
+    }
+    nehmen(p.id, { status: p.status, zeit: p.geaendert ?? p.erstellt, ...(p.ergebnis !== undefined ? { ergebnis: p.ergebnis.slice(0, 160) } : {}) })
+  }
+  return aus
+}
+
+function geschlossenLesen(x: unknown): Geschlossen {
+  const aus: Geschlossen = {}
+  if (typeof x !== 'object' || x === null) return aus
+  for (const [id, g] of Object.entries(x as Record<string, unknown>)) {
+    if (typeof g !== 'object' || g === null) continue
+    const r = g as Record<string, unknown>
+    if ((r.status !== 'erledigt' && r.status !== 'verworfen') || typeof r.zeit !== 'number') continue
+    aus[id] = { status: r.status, zeit: r.zeit, ...(typeof r.ergebnis === 'string' ? { ergebnis: r.ergebnis.slice(0, 160) } : {}) }
+  }
+  return aus
+}
+
 /**
  * Führt den Stand aus offen.md - auch von einer anderen Sitzung im selben Projekt geschrieben -
  * in die eigene Liste. Geschlossen gewinnt, außer der Punkt wurde hier danach wieder geöffnet.
  * Was nur in der Datei steht, kommt dazu und behält seine Sitzung: steht in /offen, wird
  * aber nicht gefragt.
  */
-export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[], ab = 0): Punkt[] {
+export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[], ab = 0, geschlossen: Geschlossen = {}): Punkt[] {
   const dort = new Map(datei.map(p => [p.id, p]))
-  const liste = eigene.map(p => {
+  const liste = zuGeschlossen(eigene, geschlossen).map(p => {
     const d = dort.get(p.id)
-    if (d === undefined || p.status !== 'offen' || d.status === 'offen') return p
+    if (d === undefined) return p
+    // Geprüft (Abgleich) gilt für alle Sitzungen: sonst prüft die nächste denselben Punkt noch einmal.
+    if ((d.geprueft ?? 0) > (p.geprueft ?? 0)) p = { ...p, geprueft: d.geprueft }
+    if (p.status !== 'offen' || d.status === 'offen') return p
     // Hier wieder geöffnet, nicht vor dem Schließen dort: bleibt offen.
     if (p.geaendert !== undefined && p.geaendert >= (d.geaendert ?? 0)) return p
     const { ausstehend: _a, ruht: _r, ergebnis: _e, ...rest } = p
@@ -1157,7 +1215,8 @@ export function abgleichen(eigene: readonly Punkt[], datei: readonly Punkt[], ab
   const bekannt = new Set(eigene.map(p => p.id))
   const vergeben = new Set(liste.map(p => p.nr).filter(n => n !== undefined))
   for (const d of datei) {
-    if (bekannt.has(d.id)) continue
+    // Offen in der Datei, aber schon geschlossen (eine Sitzung kannte ihn noch offen): nicht wieder aufnehmen.
+    if (bekannt.has(d.id) || (d.status === 'offen' && begraben(d, geschlossen) !== undefined)) continue
     const { ausstehend: _a, nr, ...rest } = d
     const p = { ...rest, sitzung: d.sitzung ?? 'unbekannt' }
     // Offen und hier schon vergeben (zwei Sitzungen zugleich): bekommt eine neue.
@@ -1187,9 +1246,13 @@ export function doppelteLoesen(liste: readonly Punkt[]): Punkt[] {
   })
 }
 
-/** Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. */
-export const uebernehmen = (liste: readonly Punkt[], sitzung: string, nur?: string): Punkt[] =>
-  liste.map(p => (p.status === 'offen' && (nur === undefined || p.sitzung === nur || herrenlos(p)) ? { ...p, sitzung } : p))
+/**
+ * Offene Punkte einer Sitzung, die es nicht mehr gibt (Start, /clear), werden die eigenen. Punkte
+ * einer Sitzung, die noch lebt (Lebenszeichen in .sitzungen/), bleiben ihre: sonst fragten beide dasselbe.
+ */
+export const uebernehmen = (liste: readonly Punkt[], sitzung: string, nur?: string, lebende?: ReadonlySet<string>): Punkt[] =>
+  liste.map(p => (p.status === 'offen' && (nur === undefined || p.sitzung === nur || herrenlos(p)) &&
+    !(p.sitzung !== undefined && lebende?.has(p.sitzung) === true) ? { ...p, sitzung } : p))
 
 // ---------------------------------------------------------------- Warnungen von kontext-anzeige
 
@@ -1208,6 +1271,8 @@ export type Ablage = {
   ueberblick: string
   /** Höchste je vergebene Nummer; fehlt bei älteren Dateien (dann die höchste in der Liste). */
   hoechsteNr?: number
+  /** Geschlossene Punkte je Kennung (ab 0.17.2); fehlt bei älteren Dateien. */
+  geschlossen?: Geschlossen
 }
 
 const DATEN_ANFANG = '<!-- offene-punkte-daten'
@@ -1238,6 +1303,7 @@ export const zuletztFertig = (punkte: readonly Punkt[], n = 8): Punkt[] =>
 export const ablageDaten = (a: Ablage, jetzt: number, installiert = ''): string =>
   JSON.stringify({
     punkte: a.punkte, ueberblick: a.ueberblick, hoechsteNr: Math.max(a.hoechsteNr ?? 0, hoechsteNr(a.punkte)),
+    ...(a.geschlossen !== undefined && Object.keys(a.geschlossen).length > 0 ? { geschlossen: a.geschlossen } : {}),
     version: laufend, stand: jetzt,
     // Die installierte Fassung, wenn sie von der laufenden abweicht: die Sitzung braucht einen Neustart.
     ...(installiert !== '' && installiert !== laufend ? { installiert } : {}),
@@ -1302,7 +1368,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
     return null
   }
   if (typeof d !== 'object' || d === null) return null
-  const roh = d as { punkte?: unknown; ueberblick?: unknown; hoechsteNr?: unknown }
+  const roh = d as { punkte?: unknown; ueberblick?: unknown; hoechsteNr?: unknown; geschlossen?: unknown }
   const punkte: Punkt[] = []
   for (const x of Array.isArray(roh.punkte) ? roh.punkte : []) {
     if (typeof x !== 'object' || x === null) continue
@@ -1337,7 +1403,7 @@ export function ablageLesen(inhalt: string): Ablage | null {
 
   const ab = typeof roh.hoechsteNr === 'number' ? roh.hoechsteNr : 0
   const liste = nummerieren(begrenzen(doppelteLoesen(punkte)), ab)
-  return { punkte: liste, ueberblick: text(roh.ueberblick, 2000), hoechsteNr: Math.max(ab, hoechsteNr(liste)) }
+  return { punkte: liste, ueberblick: text(roh.ueberblick, 2000), hoechsteNr: Math.max(ab, hoechsteNr(liste)), geschlossen: geschlossenLesen(roh.geschlossen) }
 }
 
 function autoLesen(x: unknown): { auto: { grund: string; zeit: number } } | undefined {
@@ -1798,4 +1864,46 @@ export function abgleichAnwenden(liste: readonly Punkt[], geprueft: readonly num
     const grund = `beim Start abgeglichen: ${e.stand === 'ueberholt' ? 'überholt' : 'erledigt'} – ${e.grund}`
     return { ...p, status: 'erledigt' as const, ergebnis: grund, auto: { grund, zeit: jetzt }, geaendert: jetzt }
   })
+}
+
+// ---------------------------------------------------------------- Mehrere Sitzungen in einem Ordner
+
+/** Ein Lebenszeichen, das älter ist, gehört einer Sitzung, die nicht mehr läuft. */
+export const LEBT_MS = 5 * 60_000
+
+/** Eine Sperre, die länger steht, gehört einer Sitzung, die mittendrin beendet wurde. */
+export const SPERRE_ALT_MS = 15_000
+
+/** Nach so langer Zeit gilt eine liegengebliebene .tmp als Rest eines gescheiterten Schreibens. */
+export const REST_ALT_MS = 10 * 60_000
+
+const winPfad = (p: string) => p.replace(/\//g, '\\')
+
+/** mkdir gelingt nur, wenn der Ordner noch fehlt - unter Windows wie unter Unix ein Schritt: die Sperre. */
+export const befehlSperren = (pfad: string, windows: boolean): string[] =>
+  windows ? ['cmd', '/c', 'mkdir', winPfad(pfad)] : ['mkdir', pfad]
+
+export const befehlFreigeben = (pfad: string, windows: boolean): string[] =>
+  windows ? ['cmd', '/c', 'rmdir', winPfad(pfad)] : ['rmdir', pfad]
+
+export const befehlVerschieben = (von: string, nach: string, windows: boolean): string[] =>
+  windows ? ['cmd', '/c', 'move', '/y', winPfad(von), winPfad(nach)] : ['mv', '-f', von, nach]
+
+export const befehlEntfernen = (dateien: readonly string[], windows: boolean): string[] =>
+  windows ? ['cmd', '/c', 'del', '/q', ...dateien.map(winPfad)] : ['rm', '-f', ...dateien]
+
+/** Reste gescheiterter Schreibvorgänge im Ablageordner (offen.md.<sitzung>.tmp usw.), die alt genug sind. */
+export const alteReste = (eintraege: readonly { name: string; kind: string; mtimeMs: number }[], jetzt: number): string[] =>
+  eintraege
+    .filter(e => e.kind === 'file' && /\.[\w-]{1,8}\.tmp$/.test(e.name) && e.mtimeMs > 0 && jetzt - e.mtimeMs >= REST_ALT_MS)
+    .map(e => e.name)
+
+/**
+ * abgleich.txt: wann zuletzt eine Sitzung im Projekt den Abgleich gemacht hat („<ms> <sitzung>“). Den
+ * stündlichen Abgleich braucht das Projekt nur einmal, nicht einmal je Sitzung.
+ */
+export function abgleichFaellig(text: string, jetzt: number): boolean {
+  const zuletzt = Number(/^\s*(\d+)/.exec(text)?.[1] ?? 0)
+  // Etwas Spielraum, damit der Takt der Sitzung, die ihn zuletzt gemacht hat, nicht knapp verpasst.
+  return !(zuletzt > 0 && zuletzt <= jetzt && jetzt - zuletzt < ABGLEICH_TAKT_MS - 5 * 60_000)
 }

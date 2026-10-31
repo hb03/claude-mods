@@ -100,6 +100,12 @@ export type Punkt = {
 /** interview: ruht, weil der Punkt gerade im Planungsinterview ist (bis Claude ihn schließt oder ändert). */
 export type Ruhe = { bis?: number; sitzung?: string; interview?: true }
 
+/**
+ * Wann ein Punkt geschlossen wurde - bleibt GESCHLOSSEN_HALTEN_MS stehen, auch wenn der Punkt selbst
+ * längst aus der Liste gefallen ist. Sonst schrieb eine Sitzung, die ihn noch offen kannte, ihn wieder auf.
+ */
+export type Grabstein = { status: 'erledigt' | 'verworfen'; zeit: number; ergebnis?: string }
+
 /** Eine Warnung, die kontext-anzeige in seinem State führt. */
 export type Warnung = { schluessel: string; stufe: 'info' | 'warn'; text: string }
 
@@ -128,6 +134,8 @@ declare module 'claude-code' {
       abschicken: { sekunden: number; inEingabe: boolean }
       /** Zählt hoch, wenn gedanken.md geändert wurde - damit das Pane neu zeichnet (die Datei selbst ist der Stand). */
       gedankenStand: number
+      /** Geschlossene Punkte je Kennung (auch aus anderen Sitzungen), damit nichts wieder aufgeht. */
+      geschlossen: Record<string, Grabstein>
     }
     /** Gelesen, nicht geschrieben: die aktuellen Hinweise von kontext-anzeige (ab 0.4.0). */
     'kontext-anzeige': {
