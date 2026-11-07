@@ -12,8 +12,12 @@
 # fehlt die Datei, zeigt die Zeile die Cache-Quote der letzten Anfrage aus dem JSON.
 # Eingerichtet in ~/.claude/settings.json unter "statusLine" (refreshInterval 30 s).
 # Läuft auch unter Windows mit Git-Bash (jq und gawk nötig); dort heißt die Datei statusline-command.sh.
+#
+# Die Zeile läuft alle 30 s in jeder Sitzung, und unter Git Bash kostet jeder Prozess und jede Subshell
+# bei Last Sekunden: Deshalb nur eingebaute Mittel, wo es irgend geht (kein cat, date, tr, basename, git).
+# Prozesse bleiben ein jq, ein mv und das awk für die Ausgabe.
 
-input=$(cat)
+IFS= read -r -d '' input
 
 # Unter Windows liegt jq nach "winget install" nur im PowerShell-PATH (WinGet\Links), nicht im PATH
 # der Git-Bash, mit der Claude Code dieses Skript startet. Den Ordner hier anhängen.
@@ -29,32 +33,46 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 0
 fi
 
-# ---------- alle Felder mit einem jq-Aufruf ----------
-IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_read cache_write \
-    cost added removed five five_reset week week_reset session_id session_name < <(
-    printf '%s' "$input" | jq -r '[
-        (.workspace.current_dir // .cwd // ""),
-        (.workspace.project_dir // ""),
-        (.model.display_name // .model.id // "Claude"),
-        (.effort.level // ""),
-        (.context_window.used_percentage // ""),
-        (.context_window.context_window_size // 0),
-        (.context_window.current_usage.input_tokens // 0),
-        (.context_window.current_usage.cache_read_input_tokens // 0),
-        (.context_window.current_usage.cache_creation_input_tokens // 0),
-        (.cost.total_cost_usd // ""),
-        (.cost.total_lines_added // 0),
-        (.cost.total_lines_removed // 0),
-        (.rate_limits.five_hour.used_percentage // ""),
-        (.rate_limits.five_hour.resets_at // ""),
-        (.rate_limits.seven_day.used_percentage // ""),
-        (.rate_limits.seven_day.resets_at // ""),
-        (.session_id // ""),
-        (.session_name // "")
-    ] | map(tostring) | join("\u001f")' | tr -d '\r'
-)
+# ---------- alle Felder in einem jq-Aufruf, auch die des Mods ----------
+# Die Datei des Mods geht als Text mit hinein: Ein halb geschriebener Stand darf nur ihre Werte kosten.
+muster='"session_id"[[:space:]]*:[[:space:]]*"([^"]+)"'
+mod_id=""
+[[ $input =~ $muster ]] && mod_id=${BASH_REMATCH[1]}
+mod_datei="$HOME/.claude/kontext-anzeige/$mod_id.json"
+mod=""
+[ -n "$mod_id" ] && [ -f "$mod_datei" ] && IFS= read -r -d '' mod < "$mod_datei"
 
-now=$(date +%s)
+IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_read cache_write \
+    cost added removed five five_reset week week_reset session_id session_name \
+    mod_letzte mod_ttl mod_treffer mod_ac mod_arbeitet mod_aktiv mod_werkzeug hint_stufe hint_text < <(
+    jq -Rrs 'split("\u001e") as $t | ($t[0] | fromjson) as $e | (try ($t[1] | fromjson) catch {}) as $m | [
+        ($e.workspace.current_dir // $e.cwd // ""),
+        ($e.workspace.project_dir // ""),
+        ($e.model.display_name // $e.model.id // "Claude"),
+        ($e.effort.level // ""),
+        ($e.context_window.used_percentage // ""),
+        ($e.context_window.context_window_size // 0),
+        ($e.context_window.current_usage.input_tokens // 0),
+        ($e.context_window.current_usage.cache_read_input_tokens // 0),
+        ($e.context_window.current_usage.cache_creation_input_tokens // 0),
+        ($e.cost.total_cost_usd // ""),
+        ($e.cost.total_lines_added // 0),
+        ($e.cost.total_lines_removed // 0),
+        ($e.rate_limits.five_hour.used_percentage // ""),
+        ($e.rate_limits.five_hour.resets_at // ""),
+        ($e.rate_limits.seven_day.used_percentage // ""),
+        ($e.rate_limits.seven_day.resets_at // ""),
+        ($e.session_id // ""),
+        ($e.session_name // ""),
+        ($m.cache.letzteAntwortAm // ""), ($m.cache.ttlSek // ""), ($m.cache.treffer // ""),
+        ($m.autoCompactAb // ""), ($m.arbeitet // false), ($m.aktivAm // ""), ($m.werkzeug // ""),
+        ($m.hinweis.stufe // ""), ($m.hinweis.text // "")
+    ] | map(tostring) | join("\u001f")' <<<"$input"$'\x1e'"$mod"
+)
+hint_text=${hint_text%$'\r'}
+
+now=${EPOCHSECONDS:-}
+[ -n "$now" ] || now=$(date +%s)
 [ -z "$cwd" ] && cwd=$PWD
 [ -z "$project_dir" ] && project_dir=$cwd
 
@@ -68,36 +86,49 @@ elif [ -f "$limits_cache" ]; then
     case "$week_reset" in ''|*[!0-9]*) ;; *) [ "$week_reset" -le "$now" ] && week=0 ;; esac
 fi
 
-# ---------- Werte des Mods ----------
-mod_datei="$HOME/.claude/kontext-anzeige/$session_id.json"
-mod_letzte="" mod_ttl="" mod_treffer="" mod_ac="" mod_arbeitet="" mod_aktiv="" mod_werkzeug="" hint_stufe="" hint_text=""
-if [ -n "$session_id" ] && [ -f "$mod_datei" ]; then
-    IFS=$'\x1f' read -r mod_letzte mod_ttl mod_treffer mod_ac mod_arbeitet mod_aktiv mod_werkzeug hint_stufe hint_text < <(
-        jq -r '[
-            (.cache.letzteAntwortAm // ""), (.cache.ttlSek // ""), (.cache.treffer // ""),
-            (.autoCompactAb // ""), (.arbeitet // false), (.aktivAm // ""), (.werkzeug // ""),
-            (.hinweis.stufe // ""), (.hinweis.text // "")
-        ] | map(tostring) | join("\u001f")' < "$mod_datei" 2>/dev/null | tr -d '\r'
-    )
-fi
 # alte Dateien des Mods gelegentlich wegräumen
 [ $((RANDOM % 200)) -eq 0 ] && find "$HOME/.claude/kontext-anzeige" -name '*.json' -mtime +3 -delete 2>/dev/null
 
 # ---------- Eingabe für die Web-App ablegen (claude-web zeigt sie in der Arbeitsansicht) ----------
 stand_dir="$HOME/.claude/statusline-stand"
-if [ -n "$session_id" ] && mkdir -p "$stand_dir" 2>/dev/null; then
+[ -n "$session_id" ] && { [ -d "$stand_dir" ] || mkdir -p "$stand_dir" 2>/dev/null; }
+if [ -n "$session_id" ] && [ -d "$stand_dir" ]; then
     printf '%s' "$input" > "$stand_dir/$session_id.json.tmp" && mv -f "$stand_dir/$session_id.json.tmp" "$stand_dir/$session_id.json"
     [ $((RANDOM % 200)) -eq 0 ] && find "$stand_dir" -name '*.json' -mtime +3 -delete 2>/dev/null
 fi
 
 # ---------- Git ----------
-repo=$(basename "$project_dir")
+# Direkt aus .git/HEAD: nächster Ordner aufwärts mit .git (bei Worktrees eine Datei, die auf das
+# eigentliche Git-Verzeichnis zeigt). Ein "ref:" ist ein Zweig, sonst steht dort der Commit.
+d=${project_dir//\\//}
+d=${d%/}
+repo=${d##*/}
 branch=""
-if top=$(git -C "$cwd" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); then
-    repo=$(basename "$top")
-    branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null \
-        || git -C "$cwd" --no-optional-locks rev-parse --short HEAD 2>/dev/null)
-fi
+d=${cwd//\\//}
+d=${d%/}
+while [ -n "$d" ]; do
+    if [ -e "$d/.git" ]; then
+        repo=${d##*/}
+        gitdir=$d/.git
+        if [ -f "$gitdir" ]; then
+            zeile=""
+            { IFS= read -r zeile < "$gitdir"; } 2>/dev/null
+            zeile=${zeile%$'\r'}
+            gitdir=${zeile#gitdir: }
+            case "$gitdir" in /*|?:*) ;; *) gitdir=$d/$gitdir ;; esac
+        fi
+        kopf=""
+        { IFS= read -r kopf < "$gitdir/HEAD"; } 2>/dev/null
+        kopf=${kopf%$'\r'}
+        case "$kopf" in
+            'ref: refs/heads/'*) branch=${kopf#ref: refs/heads/} ;;
+            'ref: '*)            branch=${kopf#ref: } ;;
+            *)                   branch=${kopf:0:7} ;;
+        esac
+        break
+    fi
+    case "$d" in */*) d=${d%/*} ;; *) d= ;; esac
+done
 
 # Sitzungsname (/rename) hinter das Repo; "repo · name" schreibt der Hook sitzungsname.sh selbst.
 case "$session_name" in
