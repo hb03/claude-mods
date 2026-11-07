@@ -28,7 +28,7 @@ fi
 
 # ---------- alle Felder mit einem jq-Aufruf ----------
 IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_read cache_write \
-    cost added removed five five_reset week week_reset session_id < <(
+    cost added removed five five_reset week week_reset session_id session_name < <(
     printf '%s' "$input" | jq -r '[
         (.workspace.current_dir // .cwd // ""),
         (.workspace.project_dir // ""),
@@ -46,7 +46,8 @@ IFS=$'\x1f' read -r cwd project_dir model effort used_pct window in_tok cache_re
         (.rate_limits.five_hour.resets_at // ""),
         (.rate_limits.seven_day.used_percentage // ""),
         (.rate_limits.seven_day.resets_at // ""),
-        (.session_id // "")
+        (.session_id // ""),
+        (.session_name // "")
     ] | map(tostring) | join("\u001f")' | tr -d '\r'
 )
 
@@ -93,6 +94,13 @@ if top=$(git -C "$cwd" --no-optional-locks rev-parse --show-toplevel 2>/dev/null
     branch=$(git -C "$cwd" --no-optional-locks symbolic-ref --short HEAD 2>/dev/null \
         || git -C "$cwd" --no-optional-locks rev-parse --short HEAD 2>/dev/null)
 fi
+
+# Sitzungsname (/rename) hinter das Repo; "repo · name" schreibt der Hook sitzungsname.sh selbst.
+case "$session_name" in
+    ''|"$repo") ;;
+    *" · "*) repo=$session_name ;;
+    *) repo="$repo · $session_name" ;;
+esac
 
 # ---------- Zusammenbau in einem awk-Lauf ----------
 awk -v repo="$repo" -v branch="$branch" -v model="$model" -v effort="$effort" \
