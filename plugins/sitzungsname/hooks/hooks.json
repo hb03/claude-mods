@@ -1,10 +1,16 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\"", "timeout": 15 } ] }
+      { "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\"", "timeout": 30 },
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\" fenster", "timeout": 60, "async": true }
+      ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\"", "timeout": 15 } ] }
+      { "hooks": [
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\"", "timeout": 30 },
+        { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/sitzungsname.sh\" fenster", "timeout": 60, "async": true }
+      ] }
     ]
   }
 }

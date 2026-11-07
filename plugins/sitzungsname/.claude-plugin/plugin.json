@@ -1,5 +1,5 @@
 {
   "name": "sitzungsname",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sitzungsnamen beginnen immer mit dem Repo-Namen: aus /rename test wird „repo · test“, ohne eigenen Namen übernimmt der Hook Claudes automatischen Titel. Unter Windows zeigt das Konsolenfenster denselben Namen."
 }

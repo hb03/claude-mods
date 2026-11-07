@@ -53,7 +53,7 @@
       "name": "sitzungsname",
       "source": "./plugins/sitzungsname",
       "description": "Hooks: Sitzungsnamen beginnen immer mit dem Repo-Namen, aus /rename test wird „repo · test“, ohne eigenen Namen wird Claudes automatischer Titel übernommen; unter Windows zeigt das Konsolenfenster denselben Namen.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "hooks"
     }
   ]
