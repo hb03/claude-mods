@@ -9,6 +9,7 @@
 #   - alle Plugins des Marketplace installieren bzw. aktualisieren (mit false deaktivierte bleiben aus),
 #   - SessionStart-Hook plugins-abgleich.sh (installiert spaeter neu hinzukommende Plugins),
 #   - Statuszeile statusline.sh, wenn noch keine gesetzt ist,
+#   - CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1, damit Claude Code den Fenstertitel von sitzungsname nicht ueberschreibt,
 #   - push-wache: erlaubte Commit-Mails (noreply, claude@hb03.de, git user.email), wenn noch nicht gesetzt.
 # Mehrfach ausfuehren schadet nicht. Vor einer Aenderung an settings.json wird eine Sicherung angelegt.
 # Die Datei bleibt ASCII, damit "irm | iex" auch unter Windows PowerShell 5.1 nichts verdreht.
@@ -90,6 +91,7 @@ $ENV.CM_MP as $mp | $ENV.CM_PW as $pw
 | if ([.hooks.SessionStart[]?.hooks[]?.command // empty] | map(contains("plugins-abgleich.sh")) | any) then .
   else .hooks.SessionStart = ((.hooks.SessionStart // []) + [{hooks: [{type: "command", command: $ENV.CM_HOOK, timeout: 120}]}]) end
 | if .statusLine == null then .statusLine = {type: "command", command: $ENV.CM_STATUS, refreshInterval: 30} else . end
+| .env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE //= "1"
 | if (.pluginConfigs[$pw].options.mails // "") == "" then .pluginConfigs[$pw].options.mails = $ENV.CM_MAILS else . end
 '@, $utf8)
     $env:CM_MP = $mp

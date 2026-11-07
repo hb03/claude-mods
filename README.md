@@ -10,6 +10,7 @@ Mods für [Claude Code](https://claude.com/claude-code) (deutschsprachig), als P
 | `commit-erinnerung` | Läuft ein Testbefehl grün durch (phpunit, pest, npm/pnpm/yarn test, pytest, vitest, jest, cargo/go/make test, `claude plugin test` u. a.; weitere per Option `testbefehle`) und liegen danach uncommittete Änderungen im Repo, bekommt Claude still einen Hinweis, den Arbeitsschritt zu committen – für denselben Stand nur einmal. Fehlschläge erkennt er auch hinter einer Pipe (`npm test \| tail`). |
 | `haiku-helfer` | Drei Subagenten auf Haiku für Fleißarbeit: `log-sucher` sichtet Logs und lange Ausgaben und meldet nur den Befund, `datei-finder` findet Dateien und Stellen (`pfad:zeile`), `status-abfrage` fragt Geräte und Dienste nur lesend ab. Ihre Beschreibung sagt „use proactively“, so gibt Claude solche Aufgaben von selbst an das günstige Modell ab, statt sie mit dem Hauptmodell zu erledigen. |
 | `hintergrund-befehle` | Gibt jeder Sitzung (auch nach einer Compaction) als eigenen Abschnitt im Systemprompt die Regel mit, Shell-Befehle, die voraussichtlich länger als etwa eine Minute brauchen – `git clone`, Installationen (winget, apt, pip, npm), Builds, große Downloads, Einrichtungsskripte, lange Tests –, selbst mit `run_in_background` zu starten und danach nicht zu pollen; kurze Befehle, deren Ergebnis sofort gebraucht wird, bleiben im Vordergrund. Muss der Nutzer trotzdem einen Bash- oder PowerShell-Befehl per Strg+B wegschieben, bekommt Claude still einen Hinweis am Ergebnis. |
+| `sitzungsname` | Der Sitzungsname beginnt immer mit dem Repo-Namen: Aus `/rename test` wird beim nächsten Prompt `repo · test`, auch wenn die Sitzung in der App umbenannt wurde. Ohne eigenen Namen übernimmt der Hook ab dem zweiten Prompt Claudes automatischen Titel als `repo · Titel`. Unter Windows zeigt das Konsolenfenster `Claude · <Name>`; dafür muss `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` gesetzt sein (macht `einrichten.ps1`). Reine Shell-Hooks, kein Mod. |
 
 Dazu `statusline.sh`: eine Statuszeile unter der Eingabe mit Repo, Zweig, Modell und Aufwand, Kontextbalken,
 Cache (Restzeit und Treffer, mit `kontext-anzeige`), 5-h- und Wochenlimit, Kosten und geänderten Zeilen.
@@ -35,6 +36,7 @@ Von Hand, in Claude Code:
 /plugin install commit-erinnerung@eigene-plugins
 /plugin install haiku-helfer@eigene-plugins
 /plugin install hintergrund-befehle@eigene-plugins
+/plugin install sitzungsname@eigene-plugins
 ```
 
 Automatisch aktuell halten – in `~/.claude/settings.json`:

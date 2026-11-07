@@ -48,6 +48,13 @@
       "description": "Mod: Claude startet lang laufende Shell-Befehle (Klonen, Installationen, Builds, Downloads, Einrichtungsskripte) selbst im Hintergrund, damit niemand Strg+B drücken muss; schiebt der Nutzer doch einen per Strg+B weg, bekommt Claude still einen Hinweis.",
       "version": "0.1.0",
       "category": "mod"
+    },
+    {
+      "name": "sitzungsname",
+      "source": "./plugins/sitzungsname",
+      "description": "Hooks: Sitzungsnamen beginnen immer mit dem Repo-Namen, aus /rename test wird „repo · test“, ohne eigenen Namen wird Claudes automatischer Titel übernommen; unter Windows zeigt das Konsolenfenster denselben Namen.",
+      "version": "0.1.0",
+      "category": "hooks"
     }
   ]
 }

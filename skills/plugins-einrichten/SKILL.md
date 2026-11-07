@@ -131,6 +131,10 @@ Unter Windows wieder mit vollem Git-Bash-Pfad und absolutem Pfad wie in
 Schritt 4. Ist eine andere Statuszeile gesetzt, nicht überschreiben, sondern
 den Nutzer fragen.
 
+Unter Windows zusätzlich für `sitzungsname` in `~/.claude/settings.json` unter
+`env` den Wert `"CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"` setzen, sonst
+überschreibt Claude Code den Fenstertitel.
+
 ## 6. Bericht
 
 Kurz, als Tabelle: Plugin · vorher · jetzt · was getan (installiert,
