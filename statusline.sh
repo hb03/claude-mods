@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Claude Code Statuszeile (unter der Eingabe): Repo, Zweig, Modell, Kontext, Cache, Limits, Kosten.
 #
-#   📁 repo │ 🌿 zweig │ 🤖 Modell · Aufwand │ ████████░░ ⚡ 42% 84k/200k ⇢763k │ 💾 ● 48m 99% │ 🕔 8% 📅 2% │ 💰 $3.21 │ +120 -30
+#   📁 repo │ 🌿 zweig │ 🤖 Modell · Aufwand │ ████████░░ ⚡ 42% 84k/200k ⇢763k │ ⏱ 3m Bash │ 💾 ● 48m 99% │ 🕔 8% 📅 2% │ 💰 $3.21 │ +120 -30
 #   ▲ Hinweis des Mods kontext-anzeige (nur wenn gerade etwas sinnvoll ist)
 #
-# Eingabe: das JSON, das Claude Code auf stdin gibt. Cache-Restzeit, Trefferquote, Compact-Schwelle
-# und Hinweis kommen aus ~/.claude/kontext-anzeige/<session_id>.json (Mod kontext-anzeige); fehlt
-# die Datei, zeigt die Zeile die Cache-Quote der letzten Anfrage aus dem JSON.
+# ⏱ = Zeit seit dem letzten Lebenszeichen (Stück der Antwort oder Werkzeug), dahinter das laufende
+# Werkzeug. Arbeitet Claude und bleibt es still, wird die Anzeige gelb und rot.
+#
+# Eingabe: das JSON, das Claude Code auf stdin gibt. Cache-Restzeit, Trefferquote, Compact-Schwelle,
+# Lebenszeichen und Hinweis kommen aus ~/.claude/kontext-anzeige/<session_id>.json (Mod kontext-anzeige);
+# fehlt die Datei, zeigt die Zeile die Cache-Quote der letzten Anfrage aus dem JSON.
 # Eingerichtet in ~/.claude/settings.json unter "statusLine" (refreshInterval 30 s).
 # Läuft auch unter Windows mit Git-Bash (jq und gawk nötig); dort heißt die Datei statusline-command.sh.
 
@@ -67,13 +70,14 @@ fi
 
 # ---------- Werte des Mods ----------
 mod_datei="$HOME/.claude/kontext-anzeige/$session_id.json"
-mod_letzte="" mod_ttl="" mod_treffer="" mod_ac="" mod_arbeitet="" hint_stufe="" hint_text=""
+mod_letzte="" mod_ttl="" mod_treffer="" mod_ac="" mod_arbeitet="" mod_aktiv="" mod_werkzeug="" hint_stufe="" hint_text=""
 if [ -n "$session_id" ] && [ -f "$mod_datei" ]; then
-    IFS=$'\x1f' read -r mod_letzte mod_ttl mod_treffer mod_ac mod_arbeitet hint_stufe hint_text < <(
+    IFS=$'\x1f' read -r mod_letzte mod_ttl mod_treffer mod_ac mod_arbeitet mod_aktiv mod_werkzeug hint_stufe hint_text < <(
         jq -r '[
             (.cache.letzteAntwortAm // ""), (.cache.ttlSek // ""), (.cache.treffer // ""),
-            (.autoCompactAb // ""), (.arbeitet // false), (.hinweis.stufe // ""), (.hinweis.text // "")
-        ] | map(tostring) | join("\u001f")' "$mod_datei" 2>/dev/null | tr -d '\r'
+            (.autoCompactAb // ""), (.arbeitet // false), (.aktivAm // ""), (.werkzeug // ""),
+            (.hinweis.stufe // ""), (.hinweis.text // "")
+        ] | map(tostring) | join("\u001f")' < "$mod_datei" 2>/dev/null | tr -d '\r'
     )
 fi
 # alte Dateien des Mods gelegentlich wegräumen
@@ -108,7 +112,8 @@ awk -v repo="$repo" -v branch="$branch" -v model="$model" -v effort="$effort" \
     -v cost="$cost" -v added="$added" -v removed="$removed" \
     -v five="$five" -v five_reset="$five_reset" -v week="$week" -v week_reset="$week_reset" \
     -v now="$now" -v letzte="$mod_letzte" -v ttl="$mod_ttl" -v treffer="$mod_treffer" -v ac="$mod_ac" \
-    -v arbeitet="$mod_arbeitet" -v hstufe="$hint_stufe" -v htext="$hint_text" '
+    -v arbeitet="$mod_arbeitet" -v aktiv="$mod_aktiv" -v werkzeug="$mod_werkzeug" \
+    -v hstufe="$hint_stufe" -v htext="$hint_text" '
 function rgb(p,   t, r, g, b) {          # 0..100 -> grün (0,200,80) -> gelb (220,200,0) -> rot (220,40,20)
     if (p < 0) p = 0; if (p > 100) p = 100
     if (p <= 50) { t = p / 50; r = t * 220; g = 200; b = 80 - t * 80 }
@@ -123,6 +128,11 @@ function kurz(n) {                        # 950, 4.2k, 124k, 1M
 }
 function dauer(s) { return s >= 60 ? sprintf("%dm", s / 60 + 0.5) : sprintf("%ds", s) }
 function uhr(e) { return e ~ /^[0-9]+$/ ? strftime("%H:%M", e) : "" }
+function seit(s) {                        # Stand ist bis zu 30 s alt, Sekunden täuschen nur vor
+    if (s < 60) return "<1m"
+    if (s < 3600) return sprintf("%dm", s / 60)
+    return sprintf("%dh", s / 3600)
+}
 BEGIN {
     R = "\033[0m"; DIM = "\033[38;2;110;110;110m"; DUNKEL = "\033[38;2;60;60;60m"
     GELB = "\033[1;38;2;255;215;0m"; CYAN = "\033[1;38;2;0;255;255m"; MAG = "\033[1;38;2;200;0;200m"
@@ -146,6 +156,18 @@ BEGIN {
         ctx = bar " " DIM "Kontext –" R
     }
     line = line SEP ctx
+
+    # Letztes Lebenszeichen. Grenzen großzügig, die Werte können bis zu 60 s nachlaufen; ein langer
+    # Befehl ist normal, Stille ohne Werkzeug nicht.
+    if (aktiv != "") {
+        still = now - aktiv; if (still < 0) still = 0
+        farbe = DIM
+        if (arbeitet == "true") {
+            if (werkzeug != "") farbe = still >= 900 ? WARN : DIM
+            else farbe = still >= 300 ? ROT : still >= 120 ? WARN : DIM
+        }
+        line = line SEP "⏱ " farbe seit(still) (arbeitet == "true" && werkzeug != "" ? " " werkzeug : "") R
+    }
 
     # Cache: Restzeit und Quote vom Mod, sonst die Quote der letzten Anfrage
     if (arbeitet == "true") cache = GRUEN "●" R " aktiv"

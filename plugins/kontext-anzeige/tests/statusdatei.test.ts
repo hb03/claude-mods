@@ -89,3 +89,56 @@ test('Windows: ohne HOME landet die Datei unter USERPROFILE', async ($, on) => {
   // unter Linux ist C:\ kein absoluter Pfad, der Test-Kit stellt das Arbeitsverzeichnis davor
   expect(pfade.every(p => p.endsWith('C:\\Users\\Nutzer/.claude/kontext-anzeige/s2.json'))).toBe(true)
 })
+
+test('Lebenszeichen: Stücke und Werkzeuge landen für das ⏱ in der Statusdatei', async ($, on) => {
+  const geschrieben: string[] = []
+  let imWerkzeug: unknown
+  on('env.get', (_, e) => ({ value: (e as { name?: string }).name === 'USERPROFILE' ? 'C:/probe' : undefined }))
+  on('session.id', () => ({ value: 'sitzung-2' }))
+  on('command.register', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('clock.every', () => ({ value: {} }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('clock.now', () => ({ value: 1_800_000_000_000 }))
+  on('ui.toast', () => ({ value: {} }))
+  on('fs.write', (_, e) => {
+    geschrieben.push((e as { text: string }).text)
+    return { value: undefined }
+  })
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('tool.call', async () => {
+    // Während das Werkzeug läuft: Eine Messung schreibt den Stand mit dem Werkzeugnamen.
+    await $.session.measure({ context: { tokens: 1000, window: 200_000, percent: 1 }, rateLimits: [], changed: ['context'] })
+    imWerkzeug = JSON.parse(geschrieben.at(-1) ?? '{}')
+    return { result: {} }
+  })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+
+  const vorher = Math.floor(Date.now() / 1000)
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(imWerkzeug).toEqual(expect.objectContaining({ werkzeug: 'Bash' }))
+  expect((imWerkzeug as { aktivAm: number }).aktivAm).toBeGreaterThanOrEqual(vorher)
+
+  // Danach läuft nichts mehr.
+  await $.session.measure({ context: { tokens: 2000, window: 200_000, percent: 1 }, rateLimits: [], changed: ['context'] })
+  expect(JSON.parse(geschrieben.at(-1) ?? '{}').werkzeug).toBeNull()
+})
+
+test('Lebenszeichen: Der Strom einer Antwort kommt unverändert durch', async ($, on) => {
+  const stuecke = [{ kind: 'text', index: 0, text: 'a' }, { kind: 'text', index: 0, text: 'b' }]
+  on('command.register', () => ({ value: {} }))
+  on('turn.step', async function* () {
+    yield* stuecke as never[]
+    return { turnId: 't', index: 0, answer: 'ab', toolUses: [], stopReason: 'end_turn', usage: null } as never
+  })
+  const strom = ($.turn as unknown as { step: (e: unknown) => AsyncGenerator<unknown, unknown> }).step({ turnId: 't', index: 0, model: 'probe', messages: [] })
+  const gesehen: unknown[] = []
+  let s = await strom.next()
+  while (!s.done) {
+    gesehen.push(s.value)
+    s = await strom.next()
+  }
+  expect(gesehen).toEqual(stuecke)
+  expect(s.value).toEqual(expect.objectContaining({ answer: 'ab' }))
+})

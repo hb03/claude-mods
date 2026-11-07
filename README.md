@@ -13,7 +13,7 @@ Mods für [Claude Code](https://claude.com/claude-code) (deutschsprachig), als P
 | `sitzungsname` | Der Sitzungsname beginnt immer mit dem Repo-Namen: Aus `/rename test` wird beim nächsten Prompt `repo · test`, auch wenn die Sitzung in der App umbenannt wurde. Ohne eigenen Namen übernimmt der Hook ab dem zweiten Prompt Claudes automatischen Titel als `repo · Titel`. Unter Windows zeigt das Konsolenfenster `Claude · <Name>`; dafür muss `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` gesetzt sein (macht `einrichten.ps1`). Reine Shell-Hooks, kein Mod. |
 
 Dazu `statusline.sh`: eine Statuszeile unter der Eingabe mit Repo, Zweig, Modell und Aufwand, Kontextbalken,
-Cache (Restzeit und Treffer, mit `kontext-anzeige`), 5-h- und Wochenlimit, Kosten und geänderten Zeilen.
+Zeit seit dem letzten Lebenszeichen (⏱, mit `kontext-anzeige`, gelb oder rot bei verdächtiger Stille), Cache (Restzeit und Treffer, mit `kontext-anzeige`), 5-h- und Wochenlimit, Kosten und geänderten Zeilen.
 Läuft unter Linux, macOS und Windows (Git-Bash); braucht `jq` und `gawk`. Am besten mit einer Schrift, die Emojis zeigt
 (z. B. im Windows Terminal).
 

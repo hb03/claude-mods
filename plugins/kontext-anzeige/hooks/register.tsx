@@ -54,6 +54,10 @@ const gezeigt = new Set<string>()
 // Nach Compact, /clear oder Modellwechsel ist ein Cache-Fehlgriff erwartet und zählt nicht.
 let fehlgriffErwartet = true
 let takt: { cancel: () => void } | undefined
+// Letztes Lebenszeichen (ms) und laufende Werkzeuge für das ⏱ der Statuszeile. Keine Atome: Sie ändern
+// sich bei jedem Stück der Antwort, in die Statusdatei kommen sie mit dem 30-s-Takt.
+let lebenszeichen = 0
+let laufendeWerkzeuge: string[] = []
 // Zuletzt gesetzte Statuszeile, damit sie nur bei Änderung neu geschrieben wird.
 let letzterStatus: string | undefined
 // Fernsteuerung (claude.ai, App): die Engine zählt sie nicht als Oberfläche, sie zeigt die Zeile aber nicht.
@@ -118,6 +122,25 @@ async function pruefeHinweise($: EngineInterface) {
   await schreibeStatusDatei($, m, c, arbeitet, aktuell)
 }
 
+// Reicht den Strom durch und zählt jedes Stück als Lebenszeichen, auch mitten im Nachdenken.
+async function* mitLebenszeichen<C, R>(strom: AsyncGenerator<C, R>): AsyncGenerator<C, R> {
+  let fertig = false
+  try {
+    for (;;) {
+      const stueck = await strom.next()
+      lebenszeichen = Date.now()
+      if (stueck.done) {
+        fertig = true
+        return stueck.value
+      }
+      yield stueck.value
+    }
+  } finally {
+    // Abbruch von oben (Esc): wie yield* an den Strom darunter weitergeben.
+    if (!fertig) await strom.return(undefined as R).catch(() => undefined)
+  }
+}
+
 // Für die Statuszeile unter der Eingabe: nur was Claude Code ihr nicht selbst mitgibt.
 async function schreibeStatusDatei(
   $: EngineInterface,
@@ -135,6 +158,8 @@ async function schreibeStatusDatei(
       : null,
     autoCompactAb: m?.autoCompactAb ?? null,
     arbeitet,
+    aktivAm: Math.round(Math.max(lebenszeichen, c?.letzteAntwortAm ?? 0) / 1000) || null,
+    werkzeug: laufendeWerkzeuge.at(-1) ?? null,
     hinweis: erster ? { stufe: erster.stufe, text: erster.text } : null,
   })
   if (inhalt === letzterDateiInhalt) return
@@ -220,6 +245,8 @@ export const register: Register = (on, options) => {
   gezeigt.clear()
   fehlgriffErwartet = true
   letzterStatus = undefined
+  lebenszeichen = 0
+  laufendeWerkzeuge = []
 
   on('session.start', async ($, e, next) => {
     fernsteuerung = (await $.env.get('CLAUDE_CODE_BRIDGE_SESSION_ID')) !== undefined
@@ -263,13 +290,28 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    lebenszeichen = Date.now()
+    laufendeWerkzeuge = []
     await update($, arbeitetA, () => true)
     await pruefeHinweise($)
     return next(e)
   })
 
+  // Vor dem Filter auf Subagenten: Auch ihre Arbeit und Werkzeuge sind Lebenszeichen.
+  on('tool.call', async ($, e, next) => {
+    lebenszeichen = Date.now()
+    laufendeWerkzeuge.push(e.tool)
+    try {
+      return await next(e)
+    } finally {
+      lebenszeichen = Date.now()
+      const i = laufendeWerkzeuge.lastIndexOf(e.tool)
+      if (i >= 0) laufendeWerkzeuge.splice(i, 1)
+    }
+  })
+
   on('turn.step', async function* ($, e, next) {
-    const r = yield* next(e)
+    const r = yield* mitLebenszeichen(next(e))
     if (e.agentId !== undefined || !r.usage) return r
     const modell: Modell = { id: r.usage.model || e.model, effort: e.effort === undefined ? undefined : String(e.effort) }
     await update($, modellA, alt => (alt && alt.id === modell.id && alt.effort === modell.effort ? alt : modell))
@@ -328,6 +370,8 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId === undefined) {
+      lebenszeichen = Date.now()
+      laufendeWerkzeuge = []
       await update($, arbeitetA, () => false)
       await update($, jetztA, () => Date.now())
       await messen($, true).catch(() => undefined)
