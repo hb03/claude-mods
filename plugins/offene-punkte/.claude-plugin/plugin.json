@@ -1,6 +1,6 @@
 {
   "name": "offene-punkte",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "Führt, was in der Sitzung noch offen ist – Entscheidungen, Freigaben und Aufgaben des Nutzers –, fragt es über der Eingabe ab und gibt die Liste je Projekt in die nächste Sitzung mit (offen.md, offen.json für claude-web). Claude trägt Punkte als Block in seiner Antwort ein und schließt Erledigtes per „erledigt: #N“; Haiku fasst nur nach, gleicht stündlich mit Commits ab und schreibt den Überblick fort. /offen zeigt und bedient alles, /offen übergabe schreibt eine Übergabe für die nächste Sitzung, /offen kosten zeigt Kosten und Nutzung; Einzelheiten in der README des Plugins.",
   "types": "./types/index.d.ts",
   "userConfig": {

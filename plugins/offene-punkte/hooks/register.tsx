@@ -360,9 +360,13 @@ export const register: Register = (on, options) => {
           if (alt.length > 0) $.ui.toast(alt.map(p => `🤖 „${p.titel}“ geschlossen (${p.auto?.grund})`).join(' · ') + ' · /offen zum Wiederöffnen', { timeoutMs: 6000 })
           // Claude hat gefragt, aber keinen Block geschrieben: Haiku fasst nach.
           if (!blockDa && nachfassen(antwort)) await auswerten($, [antwort], eingabe)
-          // Alle UEBERBLICK_NACH Antworten den Ueberblick aus dem Verlauf neu schreiben.
+          // Alle UEBERBLICK_NACH Antworten den Ueberblick fortschreiben.
           z.fertigeTurns++
-          if (z.fertigeTurns >= UEBERBLICK_NACH) await ueberblickErneuern($, 'takt')
+          // Zähler vorher zurück: scheitert der Überblick, versucht ihn nicht jede weitere Antwort erneut.
+          if (z.fertigeTurns >= UEBERBLICK_NACH) {
+            z.fertigeTurns = 0
+            await ueberblickErneuern($, 'takt')
+          }
         })().catch(fehler => $.ui.log(`offene-punkte: ${String(fehler)}`))
       })
     }

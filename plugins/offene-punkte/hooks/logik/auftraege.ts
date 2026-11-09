@@ -156,16 +156,16 @@ export function lies(roh: string): Auswertung | null {
  * Kein Werkzeug im Katalog (rund 800 Tokens in jeder Anfrage) und keine zusätzliche Modellrunde für den
  * Aufruf - der Block wird aus der fertigen Antwort gelesen wie „erledigt: #N“.
  */
-export const HINWEIS_BLOCK = `Das Plugin offene-punkte führt die offenen Fragen an den Nutzer mit Nummern und stellt sie ihm über der Eingabe als Auswahl. Es liest deine Antworten nicht mit, nur einen Block darin: Brauchst du etwas vom Nutzer, das leicht untergeht (Entscheidung mit Folgen, Freigabe, Zugangsdaten, Prüfung von Hand, Aufgabe auf seinem Rechner oder Handy), schreib ans Ende deiner Antwort einen Block in dieser Form:
+export const HINWEIS_BLOCK = `Plugin offene-punkte: Was der Nutzer leicht übersieht (Entscheidung mit Folgen, Freigabe, Zugangsdaten, Prüfung von Hand, Aufgabe an seinem Rechner oder Handy), schreibst du als Block ans Ende der Antwort - nur der Block wird gelesen und dem Nutzer als Auswahl gestellt:
 \`\`\`offen
 # Titel (2-5 Wörter) | aufgabe oder entscheidung | blockiert, normal oder angebot
-Die Frage an den Nutzer, ein Satz?
-a) Empfehlung (Label, höchstens 6 Wörter)
-b) Alternative - endet das Label mit ":", ergänzt der Nutzer noch Text
+Frage, ein Satz?
+a) Empfehlung (höchstens 6 Wörter)
+b) Alternative (endet auf ":": Nutzer ergänzt Text)
 info: warum offen, ein Satz (kann entfallen)
-anleitung: nur bei Aufgaben - Schritte mit allen Befehlen, Pfaden und Werten wörtlich, Befehle als eigene Zeilen mit "$ " davor
+anleitung: nur bei Aufgaben, alle Befehle, Pfade, Werte wörtlich; Befehle als Zeilen mit "$ "
 \`\`\`
-Mehrere Punkte: je einer ab "# ". Einen bestehenden Punkt änderst du mit "# #<Nr> Titel" (nur die Zeilen, die sich ändern). Höchstens zwei Möglichkeiten, die Empfehlung zuerst; keine für Später, Schon erledigt, Nicht relevant oder eigene Antwort - die gibt es immer. Kein Punkt für die eine Rückfrage, die der Nutzer gleich beantwortet, für "neu starten?", für Prüfungen, die du selbst machen kannst, oder für Angebote ohne Folgen. Die offene Liste kommt als Kontext „Offene Punkte“ mit, wenn sie sich ändert; die Nummer eines neuen Punkts meldet das Plugin im nächsten Turn. Erledigtes oder Hinfälliges schließt du mit einer Zeile „erledigt: #<Nr>“ (mehrere: „erledigt: #3, #5“) bzw. „überholt: #<Nr> – kurzer Grund“. Nummern nur von dort übernehmen, nie raten oder hochzählen; ohne Nummer „erledigt: Titel“. Seine Antwort („Zum offenen Punkt #<Nr> …“) liegt bei dir: umgesetzt, dann „erledigt: #<Nr>“; bleibt etwas offen, öffne ihn mit „# #<Nr> Titel“ wieder. Handlungen des Nutzers als Absicht („Ich kläre das“), nie als Ergebnis. Punkte nennst du immer mit #<Nr>. Seiten der Projekt-Webseite nennst du mit voller Adresse (https://beispiel.de/admin statt /admin).`
+Mehrere Punkte je ab "# "; bestehenden ändern mit "# #<Nr> Titel" (nur geänderte Zeilen). Höchstens a und b, Empfehlung zuerst; Später, Erledigt, Nicht relevant und eigene Antwort gibt es immer. Kein Punkt für eine gleich beantwortete Rückfrage, "neu starten?", eigene Prüfungen oder folgenlose Angebote. Schließen mit „erledigt: #<Nr>“ (auch „erledigt: #3, #5“) oder „überholt: #<Nr> – Grund“. Nummern nur aus „Offene Punkte“ oder der Rückmeldung des Plugins, nie raten oder hochzählen; ohne Nummer „erledigt: Titel“. Antwortet der Nutzer („Zum offenen Punkt #<Nr> …“): umgesetzt, dann erledigt, sonst mit „# #<Nr> Titel“ wieder öffnen. Handlungen des Nutzers nur als Absicht. Punkte immer mit #<Nr>, Seiten der Projekt-Webseite mit voller Adresse.`
 
 /** Hinweis bei Auswertung „claude“: Claude legt Punkte selbst an, statt dass Haiku jede Antwort liest. */
 /**
@@ -234,10 +234,10 @@ export function ueberblickAus(antwort: string): string {
 }
 
 /** Nach so vielen fertigen Menschen-Turns schreibt Haiku den Überblick neu (auch nach jeder Compaction). */
-export const UEBERBLICK_NACH = 8
+export const UEBERBLICK_NACH = 12
 
 /** So viel vom Verlauf bekommt Haiku für den Überblick (der Schluss zählt am meisten). */
-export const MAX_VERLAUF = 16_000
+export const MAX_VERLAUF = 10_000
 
 /** Eine Nachricht, wie $.session.messages() sie liefert - nur die Felder, die hier zählen. */
 export type Nachricht = { role: 'user' | 'assistant'; text: string }
