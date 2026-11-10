@@ -391,9 +391,18 @@ export const register: Register = (on, options) => {
       nachher: r.tokensAfter,
     }
     await update($, verlaufA, v => [...v, eintrag].slice(-20))
+    // Die Messung stammt noch von vor dem Verdichten; ohne das hier warnt die Zeile bis zur
+    // nächsten Antwort mit der alten Größe („Cache abgelaufen – schreibt 224k neu“).
+    const nachher = r.tokensAfter
+    if (nachher !== undefined) {
+      await update($, messungA, m =>
+        m ? { ...m, tokens: nachher, percent: m.window ? Math.round((nachher / m.window) * 100) : m.percent } : null,
+      )
+    }
     const wie = e.trigger === 'auto' ? 'automatisch' : e.trigger === 'manual' ? 'per /compact' : 'durch Plugin'
     const zahlen = r.tokensBefore !== undefined && r.tokensAfter !== undefined ? `: ${k(r.tokensBefore)} → ${k(r.tokensAfter)}` : ''
     $.ui.toast(`Kontext ${wie} verdichtet${zahlen}`, { timeoutMs: 8000 })
+    await pruefeHinweise($)
     return r
    }).catch(($, e, next) => next(e))
 

@@ -132,7 +132,7 @@ test('Lebenszeichen: Der Strom einer Antwort kommt unverändert durch', async ($
     yield* stuecke as never[]
     return { turnId: 't', index: 0, answer: 'ab', toolUses: [], stopReason: 'end_turn', usage: null } as never
   })
-  const strom = ($.turn as unknown as { step: (e: unknown) => AsyncGenerator<unknown, unknown> }).step({ turnId: 't', index: 0, model: 'probe', messages: [] })
+  const strom = ($.turn as unknown as { step: (e: unknown) => AsyncGenerator<unknown, unknown> }).step({ turnId: 't', index: 0, model: 'probe', messages: [{ role: 'user', text: 'TEST-Zusammenfassung', toolUses: [], toolResults: [] }] })
   const gesehen: unknown[] = []
   let s = await strom.next()
   while (!s.done) {
@@ -141,4 +141,29 @@ test('Lebenszeichen: Der Strom einer Antwort kommt unverändert durch', async ($
   }
   expect(gesehen).toEqual(stuecke)
   expect(s.value).toEqual(expect.objectContaining({ answer: 'ab' }))
+})
+
+test('Nach dem Verdichten gilt die neue Größe: Der Hinweis zur alten verschwindet', async ($, on) => {
+  const geschrieben: { path: string; text: string }[] = []
+  on('env.get', (_, e) => ({ value: (e as { name?: string }).name === 'HOME' ? '/home/probe' : undefined }))
+  on('session.id', () => ({ value: 'sitzung-3' }))
+  on('command.register', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('clock.every', () => ({ value: {} }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('clock.now', () => ({ value: 1_800_000_000_000 }))
+  on('ui.toast', () => ({ value: {} }))
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'TEST-Zusammenfassung', toolUses: [], toolResults: [] }], tokensBefore: 190_000, tokensAfter: 9_000 }) as never)
+  on('fs.write', (_, e) => {
+    geschrieben.push(e as { path: string; text: string })
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ context: { tokens: 190_000, window: 200_000, percent: 95 }, rateLimits: [], changed: ['context'] })
+  expect(JSON.parse(geschrieben.at(-1)?.text ?? '{}').hinweis.text).toContain('/compact')
+
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'TEST-Zusammenfassung', toolUses: [], toolResults: [] }] } as never)
+  expect(JSON.parse(geschrieben.at(-1)?.text ?? '{}').hinweis).toBe(null)
 })
